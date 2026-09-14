@@ -1,0 +1,6 @@
+[MESSAGES CONTROL]
+# too-few-public-methods: SQLAlchemy models and simple config classes
+# are legitimately data containers, not behavior-rich classes -- this
+# check exists to catch classes that should've just been a function,
+# which doesn't apply here.
+disable=too-few-public-methods
