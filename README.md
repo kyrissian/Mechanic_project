@@ -26,6 +26,10 @@ A Flask + SQLAlchemy + MySQL backend for a mechanic shop, managing customers, me
 
 ## Changelog
 
+### 2026-09-14: ERD Correction
+
+- The follow-up "SQLAlchemy Relationships" lesson provided the class's official ERD, which differed from the earlier draft ERD these models were first built against. Rebuilt all three models and the junction table to match it exactly: `Customer` now uses a single `name` field (was `first_name`/`last_name`, no `address`); `Mechanic` gained `email`, lost `address`, and `salary` changed from `INT` to `FLOAT`; `ServiceTicket` was significantly simplified to just `vin`, `service_date`, and `service_desc` (was `date_received`/`make`/`model`/`year`/`work_description`/`status`); the junction table was renamed `service_mechanics` with columns `ticket_id`/`mechanic_id` (was `st_mechanic` with `st_id`/`mech_id`). Tests were updated to match, following the same TDD habit as the original build.
+
 ### 2026-09-14: Initial Models & Project Setup
 
 - Set up the project as a Flask application using the app factory pattern (`create_app()`), rather than the single-file `app.py` style shown in the lesson.
@@ -99,15 +103,17 @@ This creates every table defined by the models (if they don't already exist) in 
 
 Models match the class-provided ERD exactly:
 
-- **Customer** — `id`, `first_name`, `last_name`, `address`, `phone`, `email`
-- **Service_Ticket** — `id`, `date_received`, `make`, `model`, `year`, `vin`, `work_description`, `status`, plus a foreign key to `Customer`
-- **Mechanic** — `id`, `name`, `phone`, `address`, `salary`
-- **ST_Mechanic** (junction table) — `st_id` + `mech_id`, a composite primary key linking `Service_Ticket` and `Mechanic`
+- **Customer** — `id`, `name`, `email`, `phone`
+- **Service_Ticket** — `id`, `vin`, `service_date`, `service_desc`, plus a foreign key to `Customer`
+- **Mechanic** — `id`, `name`, `email`, `phone`, `salary` (float)
+- **Service_Mechanics** (junction table) — `ticket_id` + `mechanic_id`, linking `Service_Ticket` and `Mechanic`
 
 Relationships:
 
 - **Customer → Service_Ticket**: one-to-many (a customer can have many service tickets, each ticket belongs to exactly one customer)
-- **Service_Ticket ↔ Mechanic**: many-to-many, via `ST_Mechanic` (a ticket can require multiple mechanics, a mechanic can work on multiple tickets)
+- **Service_Ticket ↔ Mechanic**: many-to-many, via `Service_Mechanics` (a ticket can require multiple mechanics, a mechanic can work on multiple tickets)
+
+Note: `service_date` is stored as a string (`VARCHAR`), not a `DATE` column, and the junction table's two columns aren't marked as a composite primary key -- both match the ERD and the lesson's own example exactly, rather than "improving" on the given design, since these models are graded against this specific diagram.
 
 ---
 
@@ -129,7 +135,7 @@ Mechanic_project/
       customer.py
       mechanic.py
       service_ticket.py
-      associations.py           # st_mechanic junction table
+      service_mechanics.py       # service_mechanics junction table
   tests/
     __init__.py
     conftest.py                 # shared pytest fixtures

@@ -27,13 +27,13 @@ def create_app(config_class=DevelopmentConfig):
 
     # Models must be imported after db.init_app() so SQLAlchemy knows
     # about every table before anything (like db.create_all(), used in
-    # tests) tries to create them. associations must come before
-    # mechanic/service_ticket since relationship(secondary="st_mechanic")
-    # in those files refers to it by table name. These imports are for
+    # tests) tries to create them. service_mechanics must come before
+    # mechanic/service_ticket since relationship(secondary=...) in
+    # those files refers to it by table name. These imports are for
     # their side effect (registering each model's table with
     # SQLAlchemy) rather than to use the names directly, hence the
     # disable comment below.
     # pylint: disable=unused-import,import-outside-toplevel
-    from app.models import customer, associations, mechanic, service_ticket
+    from app.models import customer, service_mechanics, mechanic, service_ticket
 
     return app

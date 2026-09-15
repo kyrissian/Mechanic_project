@@ -8,29 +8,25 @@ from tests.conftest import make_service_ticket_kwargs
 
 
 def test_create_service_ticket_linked_to_customer(db):
-    """A ServiceTicket should save with all its vehicle/work fields
+    """A ServiceTicket should save with its VIN/date/description
     intact, and be linked back to the customer that owns it."""
     customer = Customer(
-        first_name="Jamie", last_name="Rivera", email="jamie@example.com"
+        name="Jamie Rivera", email="jamie@example.com", phone="555-123-4567"
     )
     db.session.add(customer)
     db.session.commit()
 
-    ticket = ServiceTicket(
-        customer_id=customer.id,
-        work_description="Brake pad replacement",
-        **make_service_ticket_kwargs(),
-    )
+    ticket = ServiceTicket(customer_id=customer.id, **make_service_ticket_kwargs())
     db.session.add(ticket)
     db.session.commit()
 
     saved = db.session.get(ServiceTicket, ticket.id)
 
     assert saved is not None
-    assert saved.make == "Honda"
     assert saved.vin == "1HGCM82633A004352"
+    assert saved.service_desc == "Brake pad replacement"
     assert saved.customer.id == customer.id
-    assert saved.customer.first_name == "Jamie"
+    assert saved.customer.name == "Jamie Rivera"
 
 
 def test_service_ticket_can_have_multiple_mechanics(db):
@@ -38,13 +34,13 @@ def test_service_ticket_can_have_multiple_mechanics(db):
     mechanic -- the other direction of the same many-to-many
     relationship tested in test_mechanic_model.py."""
     customer = Customer(
-        first_name="Jamie", last_name="Rivera", email="jamie@example.com"
+        name="Jamie Rivera", email="jamie@example.com", phone="555-123-4567"
     )
     mechanic_one = Mechanic(
-        name="Alex Chen", phone="555-987-6543", address="456 Shop Rd", salary=55000
+        name="Alex Chen", email="alex@example.com", phone="555-987-6543", salary=55000.00
     )
     mechanic_two = Mechanic(
-        name="Sam Diaz", phone="555-222-3333", address="789 Garage Ln", salary=58000
+        name="Sam Diaz", email="sam@example.com", phone="555-222-3333", salary=58000.00
     )
 
     ticket = ServiceTicket(customer=customer, **make_service_ticket_kwargs())

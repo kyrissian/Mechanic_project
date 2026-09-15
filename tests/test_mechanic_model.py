@@ -12,9 +12,9 @@ def test_create_mechanic(db):
     with those exact values intact."""
     mechanic = Mechanic(
         name="Alex Chen",
+        email="alex@example.com",
         phone="555-987-6543",
-        address="456 Shop Rd",
-        salary=55000,
+        salary=55000.00,
     )
     db.session.add(mechanic)
     db.session.commit()
@@ -23,26 +23,26 @@ def test_create_mechanic(db):
 
     assert saved is not None
     assert saved.name == "Alex Chen"
+    assert saved.email == "alex@example.com"
     assert saved.phone == "555-987-6543"
-    assert saved.address == "456 Shop Rd"
-    assert saved.salary == 55000
+    assert saved.salary == 55000.00
 
 
 def test_mechanic_can_be_assigned_to_multiple_tickets(db):
     """A single mechanic should be able to work on more than one
     service ticket -- this is the many-to-many relationship the ERD's
-    ST_Mechanic junction table exists to support."""
+    service_mechanics junction table exists to support."""
     customer = Customer(
-        first_name="Jamie", last_name="Rivera", email="jamie@example.com"
+        name="Jamie Rivera", email="jamie@example.com", phone="555-123-4567"
     )
     mechanic = Mechanic(
-        name="Alex Chen", phone="555-987-6543", address="456 Shop Rd", salary=55000
+        name="Alex Chen", email="alex@example.com", phone="555-987-6543", salary=55000.00
     )
 
     ticket_one = ServiceTicket(customer=customer, **make_service_ticket_kwargs())
     ticket_two = ServiceTicket(
         customer=customer,
-        **make_service_ticket_kwargs(model="Corolla", vin="2T1BURHE0JC014678"),
+        **make_service_ticket_kwargs(vin="2T1BURHE0JC014678", service_desc="Oil change"),
     )
 
     ticket_one.mechanics.append(mechanic)

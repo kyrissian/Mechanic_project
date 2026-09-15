@@ -9,8 +9,6 @@ means tests can never leak state into each other -- one test creating
 a customer can't cause a different test to unexpectedly see it.
 """
 
-from datetime import date
-
 import pytest
 from app import create_app
 from app.config import TestingConfig
@@ -50,12 +48,9 @@ def make_service_ticket_kwargs(**overrides):
     test_service_ticket_model.py both use to build their tickets.
     """
     defaults = {
-        "date_received": date(2026, 1, 5),
-        "make": "Honda",
-        "model": "Civic",
-        "year": 2019,
         "vin": "1HGCM82633A004352",
-        "status": "open",
+        "service_date": "2026-01-05",
+        "service_desc": "Brake pad replacement",
     }
     defaults.update(overrides)
     return defaults
