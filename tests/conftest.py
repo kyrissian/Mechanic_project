@@ -40,6 +40,14 @@ def db(app):
     return _db
 
 
+# pylint: disable=redefined-outer-name
+@pytest.fixture
+def client(app):
+    """A Flask test client for sending HTTP requests against routes,
+    backed by the same fresh in-memory database as the `db` fixture."""
+    return app.test_client()
+
+
 def make_service_ticket_kwargs(**overrides):
     """Default field values for constructing a ServiceTicket in
     tests. Individual tests override only the fields they care about

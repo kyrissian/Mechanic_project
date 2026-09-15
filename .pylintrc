@@ -3,4 +3,9 @@
 # are legitimately data containers, not behavior-rich classes -- this
 # check exists to catch classes that should've just been a function,
 # which doesn't apply here.
-disable=too-few-public-methods
+#
+# too-many-ancestors: Marshmallow's SQLAlchemyAutoSchema has a deep
+# inheritance chain by design (that's how its auto-field-generation
+# works) -- this isn't a sign of a badly designed class hierarchy in
+# our code, just how the library is built.
+disable=too-few-public-methods,too-many-ancestors

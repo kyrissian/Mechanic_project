@@ -9,7 +9,7 @@ MySQL database or interfering with a separately-running dev server.
 """
 
 from flask import Flask
-from app.extensions import db
+from app.extensions import db, ma
 from app.config import DevelopmentConfig
 
 
@@ -24,6 +24,7 @@ def create_app(config_class=DevelopmentConfig):
     app.config.from_object(config_class)
 
     db.init_app(app)
+    ma.init_app(app)
 
     # Models must be imported after db.init_app() so SQLAlchemy knows
     # about every table before anything (like db.create_all(), used in
@@ -35,5 +36,8 @@ def create_app(config_class=DevelopmentConfig):
     # disable comment below.
     # pylint: disable=unused-import,import-outside-toplevel
     from app.models import customer, service_mechanics, mechanic, service_ticket
+
+    from app.routes.customer_routes import customer_bp
+    app.register_blueprint(customer_bp)
 
     return app
