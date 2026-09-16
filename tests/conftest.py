@@ -11,8 +11,8 @@ a customer can't cause a different test to unexpectedly see it.
 
 import pytest
 from app import create_app
-from app.config import TestingConfig
 from app.extensions import db as _db
+from config import TestingConfig
 
 
 @pytest.fixture

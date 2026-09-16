@@ -8,4 +8,12 @@
 # inheritance chain by design (that's how its auto-field-generation
 # works) -- this isn't a sign of a badly designed class hierarchy in
 # our code, just how the library is built.
-disable=too-few-public-methods,too-many-ancestors
+#
+# cyclic-import: each blueprint's __init__.py creates its Blueprint
+# object, then deliberately imports its own routes.py at the bottom
+# (after the Blueprint already exists) so the route decorators in
+# routes.py can attach to it -- routes.py then imports the blueprint
+# back from __init__.py. This is the standard, documented pattern for
+# structuring Flask blueprints across two files, not an accidental
+# circular dependency.
+disable=too-few-public-methods,too-many-ancestors,cyclic-import

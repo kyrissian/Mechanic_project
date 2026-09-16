@@ -10,7 +10,7 @@ MySQL database or interfering with a separately-running dev server.
 
 from flask import Flask
 from app.extensions import db, ma
-from app.config import DevelopmentConfig
+from config import DevelopmentConfig
 
 
 def create_app(config_class=DevelopmentConfig):
@@ -35,9 +35,10 @@ def create_app(config_class=DevelopmentConfig):
     # SQLAlchemy) rather than to use the names directly, hence the
     # disable comment below.
     # pylint: disable=unused-import,import-outside-toplevel
+
     from app.models import customer, service_mechanics, mechanic, service_ticket
 
-    from app.routes.customer_routes import customer_bp
+    from app.blueprints.customer import customer_bp
     app.register_blueprint(customer_bp)
 
     return app

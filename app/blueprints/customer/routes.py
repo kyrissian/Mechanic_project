@@ -7,15 +7,14 @@ GET /customers (all), GET /customers/<id> (one), POST /customers
 (create), PUT /customers/<id> (full update), DELETE /customers/<id>.
 """
 
-from flask import Blueprint, request, jsonify
+from flask import request, jsonify
 from marshmallow import ValidationError
 from sqlalchemy import select
 
 from app.extensions import db
 from app.models.customer import Customer
-from app.schemas.customer_schema import customer_schema, customers_schema
-
-customer_bp = Blueprint("customers", __name__)
+from app.blueprints.customer import customer_bp
+from app.blueprints.customer.schemas import customer_schema, customers_schema
 
 
 @customer_bp.route("/customers", methods=["POST"])

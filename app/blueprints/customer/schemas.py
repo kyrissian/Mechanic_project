@@ -1,6 +1,10 @@
 """
 Marshmallow schema for the Customer model.
 
+Lives alongside routes.py in this blueprint's own folder (rather than
+in a project-wide schemas/ folder) -- each resource's routes and its
+schema are kept together, since they're only ever used together.
+
 Used for three jobs at once: validating incoming JSON on create/update
 (does it have the right fields, right types?), deserializing that
 JSON into a plain dict of Python values, and serializing a Customer
