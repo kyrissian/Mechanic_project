@@ -8,8 +8,9 @@
 ![pytest](https://img.shields.io/badge/pytest-0A9EDC?logo=pytest&logoColor=white&style=flat-square)
 ![Postman](https://img.shields.io/badge/Postman-FF6C37?logo=postman&logoColor=white&style=flat-square)
 ![Pylint](https://img.shields.io/badge/Pylint-enabled-brightgreen?style=flat-square)
+![GitHub Actions](https://img.shields.io/badge/GitHub_Actions-2088FF?logo=githubactions&logoColor=white&style=flat-square)
 
-A Flask + SQLAlchemy + MySQL backend for a mechanic shop, managing customers, mechanics, and service tickets, with a Marshmallow-validated REST API. Built for the "Database Design and Planning with ERDs," "SQLAlchemy Relationships," and "Marshmallow Schemas & CRUD Endpoints" course modules.
+A Flask + SQLAlchemy + MySQL backend for a mechanic shop, managing customers, mechanics, and service tickets, with a Marshmallow-validated REST API built on the Application Factory pattern. Built for the "Database Design and Planning with ERDs," "SQLAlchemy Relationships," "Marshmallow Schemas & CRUD Endpoints," and "Application Factory Pattern" course modules.
 
 ---
 
@@ -20,22 +21,32 @@ A Flask + SQLAlchemy + MySQL backend for a mechanic shop, managing customers, me
 - [Getting Started](#getting-started)
 - [Database Setup](#database-setup)
 - [Entity-Relationship Diagram](#entity-relationship-diagram)
+- [API Endpoints](#api-endpoints)
+- [Error Handling](#error-handling)
 - [Project Structure](#project-structure)
 - [Architecture Notes](#architecture-notes)
 - [Testing](#testing)
+- [CI](#ci)
 
 ---
 
 ## Changelog
 
-### 2026-09-15: Customer REST API
+### 2026-09-16: Global Error Handling, CI, and Dependency Fix
 
-- Added `flask-marshmallow` and `marshmallow-sqlalchemy`, wired up as a shared `ma` extension instance (same pattern as `db`).
-- Built `CustomerSchema` for validating incoming JSON and serializing `Customer` objects to/from JSON.
-- Implemented full CRUD routes for `Customer` as a Blueprint (`POST`, `GET` all, `GET` one, `PUT`, `DELETE` at `/customers`), following REST conventions and proper status codes (`201` on create, `404` when not found, `400` on validation failure or duplicate email).
-- Wrote route-level tests alongside each endpoint (happy path + a key edge case per route -- duplicate email, missing required field, not-found for each id-based route).
-- Verified the full CRUD lifecycle two ways: the automated test suite, and manually via Postman against the real running app and MySQL database.
-- Exported the verified Postman requests as `mechanic_shop_api.postman_collection.json`, committed to the repo.
+- Added global error handlers (`app/error_handlers.py`) so unmatched routes, wrong HTTP methods, and malformed/missing JSON bodies all return consistent JSON instead of Flask's default HTML error pages. Not required by the assignment -- added to directly address "thorough error handling for all API calls."
+- Added `.github/workflows/ci.yml`: runs the full test suite and Pylint on every push/PR. Also not required by the assignment -- carried over from CI/CD coursework on a prior project. Named `ci.yml` (not `main.yml`) deliberately: unlike that prior project, this API has nowhere to deploy to, so there's no CD half to this workflow.
+- Fixed a real gap in `requirements.txt`: `flask-marshmallow`, `marshmallow-sqlalchemy`, and `pylint` had all been installed and used for some time but were never added to the file, which would have broken a fresh install (or CI) with `ModuleNotFoundError`. Verified the fix by installing strictly from `requirements.txt` into a brand-new virtual environment and re-running the full suite.
+- Added 4 new tests covering unmatched routes (404), wrong HTTP methods (405), malformed JSON syntax (400), and the wrong `Content-Type` header (415).
+
+### 2026-09-15: Mechanic and ServiceTicket Resources, Application Factory Refactor
+
+- Added full CRUD for `Mechanic` (`/mechanics`): create, get-all, get-one (extra credit), update, delete.
+- Added `ServiceTicket` routes (`/service-tickets`): create, get-all, get-one (extra credit), assign-mechanic, remove-mechanic. Deliberately no update or delete for the ticket itself -- completed work should never be erasable.
+- Reorganized the project into the Application Factory pattern's blueprint structure: each resource (`customer`, `mechanic`, `service_ticket`) now has its own folder under `app/blueprints/` containing `__init__.py` (creates and registers the Blueprint), `routes.py`, and `schemas.py` -- replacing the earlier flat `app/routes/` and `app/schemas/` folders.
+- Moved `config.py` from `app/config.py` to the project root, matching the lesson's file structure.
+- Refactored `Customer`'s routes to use a `url_prefix` (`/customers`) with relative paths, matching the pattern used for the two new resources, for consistency across all three.
+- 24 new tests added across both new resources' models and routes.
 
 ### 2026-09-14: ERD Correction
 
@@ -53,16 +64,17 @@ A Flask + SQLAlchemy + MySQL backend for a mechanic shop, managing customers, me
 
 ## Tech Stack
 
-| Layer                      | Technology                                                       |
-| -------------------------- | ---------------------------------------------------------------- |
-| Web framework              | Flask                                                            |
-| ORM                        | Flask-SQLAlchemy (SQLAlchemy 2.0 `Mapped`/`mapped_column` style) |
-| Serialization / validation | Flask-Marshmallow, marshmallow-sqlalchemy                        |
-| Database                   | MySQL (via `mysql-connector-python`)                             |
-| Config / secrets           | `python-dotenv` (`.env`, gitignored)                             |
-| Testing                    | pytest, with an isolated in-memory SQLite database               |
-| Manual API testing         | Postman (collection included in the repo)                        |
-| Linting                    | Pylint                                                           |
+| Layer                      | Technology                                                                           |
+| -------------------------- | ------------------------------------------------------------------------------------ |
+| Web framework              | Flask (Application Factory pattern)                                                  |
+| ORM                        | Flask-SQLAlchemy (SQLAlchemy 2.0 `Mapped`/`mapped_column` style)                     |
+| Serialization / validation | Flask-Marshmallow, marshmallow-sqlalchemy                                            |
+| Database                   | MySQL (via `mysql-connector-python`)                                                 |
+| Config / secrets           | `python-dotenv` (`.env`, gitignored)                                                 |
+| Testing                    | pytest, with an isolated in-memory SQLite database                                   |
+| Manual API testing         | Postman (collection included in the repo)                                            |
+| Linting                    | Pylint                                                                               |
+| CI                         | GitHub Actions (test + lint only -- no deploy stage; this API isn't hosted anywhere) |
 
 ---
 
@@ -130,6 +142,55 @@ Note: `service_date` is stored as a string (`VARCHAR`), not a `DATE` column, and
 
 ---
 
+## API Endpoints
+
+All request/response bodies are JSON.
+
+### Customer (`/customers`)
+
+| Method | URL               | Purpose            |
+| ------ | ----------------- | ------------------ |
+| POST   | `/customers`      | Create a customer  |
+| GET    | `/customers`      | List all customers |
+| GET    | `/customers/<id>` | Get one customer   |
+| PUT    | `/customers/<id>` | Update a customer  |
+| DELETE | `/customers/<id>` | Delete a customer  |
+
+### Mechanic (`/mechanics`)
+
+| Method | URL               | Purpose                         |
+| ------ | ----------------- | ------------------------------- |
+| POST   | `/mechanics`      | Create a mechanic               |
+| GET    | `/mechanics`      | List all mechanics              |
+| GET    | `/mechanics/<id>` | Get one mechanic (extra credit) |
+| PUT    | `/mechanics/<id>` | Update a mechanic               |
+| DELETE | `/mechanics/<id>` | Delete a mechanic               |
+
+### Service Ticket (`/service-tickets`)
+
+| Method | URL                                                   | Purpose                               |
+| ------ | ----------------------------------------------------- | ------------------------------------- |
+| POST   | `/service-tickets`                                    | Create a service ticket               |
+| GET    | `/service-tickets`                                    | List all service tickets              |
+| GET    | `/service-tickets/<id>`                               | Get one service ticket (extra credit) |
+| PUT    | `/service-tickets/<id>/assign-mechanic/<mechanic_id>` | Assign a mechanic to a ticket         |
+| PUT    | `/service-tickets/<id>/remove-mechanic/<mechanic_id>` | Remove a mechanic from a ticket       |
+
+Deliberately no `PUT`/`DELETE` for the ticket resource itself -- a completed or in-progress service record should never be silently overwritten or erased.
+
+---
+
+## Error Handling
+
+Two global error handlers (`app/error_handlers.py`) guarantee every response from this API is JSON, including failures that never reach an actual route function:
+
+- Any HTTP-level error (unmatched route → 404, wrong HTTP method → 405, malformed JSON body → 400, wrong `Content-Type` header → 415, etc.) returns `{"error": "..."}` with the matching status code, instead of Flask's default HTML error page.
+- Any unexpected exception in application code is caught and logged server-side, and returns a generic `{"error": "An unexpected server error occurred."}` with a 500, rather than leaking a raw traceback to the client.
+
+This is separate from, and doesn't interfere with, the specific `{"error": "Customer not found."}`-style responses already written into each route for expected cases like a missing id or a duplicate email -- those are returned directly by the view functions and never touch these handlers at all.
+
+---
+
 ## Project Structure
 
 ```
@@ -138,31 +199,46 @@ Mechanic_project/
   .gitignore
   .pylintrc
   requirements.txt
+  config.py                   # DevelopmentConfig (MySQL) / TestingConfig (SQLite)
   run.py                      # entry point: builds real MySQL tables, starts dev server
   mechanic_shop_api.postman_collection.json   # exported Postman requests for every endpoint
+  .github/
+    workflows/
+      ci.yml                   # runs pytest + pylint on push/PR
   app/
     __init__.py                # app factory (create_app())
-    config.py                  # DevelopmentConfig (MySQL) / TestingConfig (SQLite)
     extensions.py               # shared db = SQLAlchemy() / ma = Marshmallow() instances
+    error_handlers.py           # global JSON error handlers
     models/
       __init__.py
       customer.py
       mechanic.py
       service_ticket.py
       service_mechanics.py       # service_mechanics junction table
-    schemas/
+    blueprints/
       __init__.py
-      customer_schema.py         # validates/serializes Customer JSON
-    routes/
-      __init__.py
-      customer_routes.py         # CRUD Blueprint for /customers
+      customer/
+        __init__.py               # creates and registers the Customer blueprint
+        routes.py                 # CRUD routes for /customers
+        schemas.py                # CustomerSchema
+      mechanic/
+        __init__.py
+        routes.py                 # CRUD routes for /mechanics
+        schemas.py                # MechanicSchema
+      service_ticket/
+        __init__.py
+        routes.py                 # routes for /service-tickets
+        schemas.py                # ServiceTicketSchema (include_fk=True)
   tests/
     __init__.py
     conftest.py                 # shared pytest fixtures
     test_customer_model.py
     test_mechanic_model.py
     test_service_ticket_model.py
-    test_customer_routes.py      # tests for every /customers endpoint
+    test_customer_routes.py
+    test_mechanic_routes.py
+    test_service_ticket_routes.py
+    test_error_handlers.py
 ```
 
 ---
@@ -171,18 +247,25 @@ Mechanic_project/
 
 ### Why not a single `app.py`, like the lesson shows?
 
-The lesson's example puts everything — Flask app creation, the database connection string, `db = SQLAlchemy()`, and the models — into one file. This project splits those same responsibilities across several files instead, for two concrete reasons:
+The lesson's simplest example puts everything — Flask app creation, the database connection string, `db = SQLAlchemy()`, and the models — into one file. This project splits those same responsibilities across several files instead, for two concrete reasons:
 
-1. **Testability.** A single module-level `app = Flask(__name__)` gets created once, permanently wired to the real MySQL database, the moment the file is imported — there's no clean way for a test to get its own separate, disposable app pointed at a fake database instead. Wrapping app creation in a `create_app()` function (the "app factory" pattern) means each test can call `create_app(TestingConfig)` to get a fresh, fully isolated app backed by a fast in-memory database, without ever touching real data. This is what makes writing a test alongside every model practical, rather than tests needing to either hit the real database or be bolted on awkwardly after the fact.
+1. **Testability.** A single module-level `app = Flask(__name__)` gets created once, permanently wired to the real MySQL database, the moment the file is imported — there's no clean way for a test to get its own separate, disposable app pointed at a fake database instead. Wrapping app creation in a `create_app()` function (the "app factory" pattern) means each test can call `create_app(TestingConfig)` to get a fresh, fully isolated app backed by a fast in-memory database, without ever touching real data.
 
-2. **Maintainability.** Config, the shared `db` instance, and each model each have one clear, single-purpose file. As routes get added in a later module, they'll have an obvious home (e.g. a `routes/` folder) instead of getting stacked into an already-crowded single file.
+2. **Maintainability.** Config, the shared `db`/`ma` instances, each model, and each resource's routes/schema all have one clear, single-purpose file or folder.
 
-`run.py` is functionally where the lesson's `app.py` ends up: it calls `create_app()`, runs `db.create_all()` to build the real tables, and starts the dev server — same end result, just assembled from the reusable pieces above instead of written inline.
+`run.py` is functionally where the lesson's `app.py` ends up: it calls `create_app()`, runs `db.create_all()` to build the real tables, and starts the dev server.
+
+### Blueprints, one folder per resource
+
+Following the Application Factory Pattern lesson's own file structure, each resource's routes and schema live together in their own folder under `app/blueprints/`, rather than in project-wide `routes/`/`schemas/` folders (an earlier structure this project briefly used). Each blueprint's `__init__.py` creates the `Blueprint` object, then imports its own `routes.py` at the very bottom — after the `Blueprint` already exists — so every `@blueprint.route(...)` decorator in `routes.py` attaches correctly. `routes.py` in turn imports the blueprint back from `__init__.py`. This two-file, bottom-of-file-import pattern is the standard way to structure Flask blueprints without a circular import.
+
+Each blueprint is registered in `app/__init__.py` with a `url_prefix` matching the resource's plural name (`/customers`, `/mechanics`, `/service-tickets`), so the routes inside each `routes.py` only need their path relative to that prefix.
 
 ### Provider-style separation
 
-- `app/extensions.py` holds the shared `db` and `ma` objects. It's kept separate from `app/__init__.py` specifically to avoid a circular import: model/schema files need to import `db`/`ma` to define their columns/fields, and the app factory needs to import the models to register their tables — if these lived in `app/__init__.py`, those imports would depend on each other.
+- `app/extensions.py` holds the shared `db` and `ma` objects. It's kept separate from `app/__init__.py` specifically to avoid a circular import: model/schema files need to import `db`/`ma` to define their columns/fields, and the app factory needs to import the models to register their tables.
 - Model files import `service_mechanics.py`'s `service_mechanics` table by string name (`secondary="service_mechanics"`) rather than importing the `Table` object directly, avoiding another circular-import path between `mechanic.py` and `service_ticket.py`.
+- `ServiceTicketSchema` sets `include_fk = True` in its `Meta` class specifically because `SQLAlchemyAutoSchema` excludes foreign key columns by default -- without it, `customer_id` (the field a client needs to send when creating a ticket) would be silently missing from the schema entirely.
 
 ---
 
@@ -190,12 +273,12 @@ The lesson's example puts everything — Flask app creation, the database connec
 
 ### Automated tests
 
-Each model has its own test file, written alongside the model as it was built rather than afterward:
+Each model has its own test file, written alongside the model as it was built, plus a matching route test file for its HTTP endpoints:
 
-- **`test_customer_model.py`** — creating a customer with all fields, and enforcing that email must be unique.
-- **`test_mechanic_model.py`** — creating a mechanic, and confirming a single mechanic can be linked to multiple service tickets (the many-to-many relationship).
-- **`test_service_ticket_model.py`** — creating a ticket linked to its customer, and confirming a single ticket can require multiple mechanics (the other direction of that same many-to-many relationship).
-- **`test_customer_routes.py`** — every `/customers` endpoint (create, list, get one, update, delete), plus key edge cases: duplicate email rejected, missing required field rejected, and a 404 for each id-based route when the id doesn't exist.
+- **`test_customer_model.py`** / **`test_customer_routes.py`** — model-level creation and unique-email enforcement; every `/customers` endpoint including duplicate-email and missing-field rejection, and 404s for bad ids.
+- **`test_mechanic_model.py`** / **`test_mechanic_routes.py`** — model-level creation and the many-to-many relationship to tickets; every `/mechanics` endpoint including the extra-credit get-one route.
+- **`test_service_ticket_model.py`** / **`test_service_ticket_routes.py`** — model-level creation and the many-to-many relationship to mechanics; every `/service-tickets` endpoint including assign/remove-mechanic edge cases (duplicate assignment, removing an unassigned mechanic, ticket/mechanic not found).
+- **`test_error_handlers.py`** — confirms unmatched routes, wrong HTTP methods, malformed JSON, and wrong `Content-Type` all return consistent JSON rather than Flask's default HTML error pages.
 
 Tests run against a temporary in-memory SQLite database (via `TestingConfig`), never the real MySQL database — so the suite is fast and never at risk of touching or corrupting real data.
 
@@ -205,11 +288,11 @@ Run the full suite:
 python -m pytest -v
 ```
 
-Currently: **16 tests, all passing.**
+Currently: **41 tests, all passing.**
 
 ### Testing with Postman
 
-In addition to the automated test suite, every `/customers` endpoint was also manually verified against the real running app and the real MySQL database, using Postman. The saved requests are exported as `mechanic_shop_api.postman_collection.json` in the project root.
+In addition to the automated test suite, every endpoint was also manually verified against the real running app and the real MySQL database, using Postman. The saved requests are exported as `mechanic_shop_api.postman_collection.json` in the project root.
 
 To use it:
 
@@ -218,12 +301,12 @@ To use it:
 3. Make sure the app is running locally (`python run.py`).
 4. Open the `Mechanic Shop API` collection and send any request — each one is pre-filled with the correct method, URL, and (where needed) a sample JSON body.
 
-Endpoints covered:
+See [API Endpoints](#api-endpoints) above for the full list covered.
 
-| Method | URL               | Purpose            |
-| ------ | ----------------- | ------------------ |
-| POST   | `/customers`      | Create a customer  |
-| GET    | `/customers`      | List all customers |
-| GET    | `/customers/<id>` | Get one customer   |
-| PUT    | `/customers/<id>` | Update a customer  |
-| DELETE | `/customers/<id>` | Delete a customer  |
+---
+
+## CI
+
+`.github/workflows/ci.yml` runs on every push and pull request to `main`: installs dependencies from `requirements.txt`, runs the full pytest suite, then runs Pylint. Because tests use an in-memory SQLite database rather than a real MySQL connection, this workflow needs no database service or secrets configured at all.
+
+This wasn't required by the assignment -- it's carried over from CI/CD coursework on a prior project. Unlike that project, this API isn't deployed anywhere, so there's no CD (deployment) stage here, which is also why this file is named `ci.yml` rather than `main.yml`.
