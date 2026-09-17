@@ -136,6 +136,263 @@
         }
       },
       "response": []
+    },
+    {
+      "name": "Create Mechanic",
+      "request": {
+        "method": "POST",
+        "header": [],
+        "body": {
+          "mode": "raw",
+          "raw": "{\r\n  \"name\": \"Alex Chen\",\r\n  \"email\": \"alex@example.com\",\r\n  \"phone\": \"555-987-6543\",\r\n  \"salary\": 55000.00\r\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": {
+          "raw": "http://127.0.0.1:5000/mechanics",
+          "protocol": "http",
+          "host": [
+            "127",
+            "0",
+            "0",
+            "1"
+          ],
+          "port": "5000",
+          "path": [
+            "mechanics"
+          ]
+        }
+      },
+      "response": []
+    },
+    {
+      "name": "Get All Mechanics",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "http://127.0.0.1:5000/mechanics",
+          "protocol": "http",
+          "host": [
+            "127",
+            "0",
+            "0",
+            "1"
+          ],
+          "port": "5000",
+          "path": [
+            "mechanics"
+          ]
+        }
+      },
+      "response": []
+    },
+    {
+      "name": "Get One Mechanic",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "http://127.0.0.1:5000/mechanics/1",
+          "protocol": "http",
+          "host": [
+            "127",
+            "0",
+            "0",
+            "1"
+          ],
+          "port": "5000",
+          "path": [
+            "mechanics",
+            "1"
+          ]
+        }
+      },
+      "response": []
+    },
+    {
+      "name": "Update Mechanic",
+      "request": {
+        "method": "PUT",
+        "header": [],
+        "body": {
+          "mode": "raw",
+          "raw": "{\r\n  \"name\": \"Alex Chen\",\r\n  \"email\": \"alex@example.com\",\r\n  \"phone\": \"555-987-6767\",\r\n  \"salary\": 63000.00\r\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": {
+          "raw": "http://127.0.0.1:5000/mechanics/1",
+          "protocol": "http",
+          "host": [
+            "127",
+            "0",
+            "0",
+            "1"
+          ],
+          "port": "5000",
+          "path": [
+            "mechanics",
+            "1"
+          ]
+        }
+      },
+      "response": []
+    },
+    {
+      "name": "Delete Mechanic",
+      "request": {
+        "method": "DELETE",
+        "header": [],
+        "url": {
+          "raw": "http://127.0.0.1:5000/mechanics/1",
+          "protocol": "http",
+          "host": [
+            "127",
+            "0",
+            "0",
+            "1"
+          ],
+          "port": "5000",
+          "path": [
+            "mechanics",
+            "1"
+          ]
+        }
+      },
+      "response": []
+    },
+    {
+      "name": "Create Service Ticket",
+      "request": {
+        "method": "POST",
+        "header": [],
+        "body": {
+          "mode": "raw",
+          "raw": "{\r\n  \"customer_id\": 3,\r\n  \"vin\": \"1HGCM82633A004352\",\r\n  \"service_date\": \"2026-01-05\",\r\n  \"service_desc\": \"Brake pad replacement\"\r\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": {
+          "raw": "http://127.0.0.1:5000/service-tickets",
+          "protocol": "http",
+          "host": [
+            "127",
+            "0",
+            "0",
+            "1"
+          ],
+          "port": "5000",
+          "path": [
+            "service-tickets"
+          ]
+        }
+      },
+      "response": []
+    },
+    {
+      "name": "Get All Service Tickets",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "http://127.0.0.1:5000/service-tickets",
+          "protocol": "http",
+          "host": [
+            "127",
+            "0",
+            "0",
+            "1"
+          ],
+          "port": "5000",
+          "path": [
+            "service-tickets"
+          ]
+        }
+      },
+      "response": []
+    },
+    {
+      "name": "Assign Mechanic",
+      "request": {
+        "method": "PUT",
+        "header": [],
+        "url": {
+          "raw": "http://127.0.0.1:5000/service-tickets/1/assign-mechanic/1",
+          "protocol": "http",
+          "host": [
+            "127",
+            "0",
+            "0",
+            "1"
+          ],
+          "port": "5000",
+          "path": [
+            "service-tickets",
+            "1",
+            "assign-mechanic",
+            "1"
+          ]
+        }
+      },
+      "response": []
+    },
+    {
+      "name": "Get One Service Ticket",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "http://127.0.0.1:5000/service-tickets/1",
+          "protocol": "http",
+          "host": [
+            "127",
+            "0",
+            "0",
+            "1"
+          ],
+          "port": "5000",
+          "path": [
+            "service-tickets",
+            "1"
+          ]
+        }
+      },
+      "response": []
+    },
+    {
+      "name": "Remove Mechanic",
+      "request": {
+        "method": "PUT",
+        "header": [],
+        "url": {
+          "raw": "http://127.0.0.1:5000/service-tickets/1/remove-mechanic/1",
+          "protocol": "http",
+          "host": [
+            "127",
+            "0",
+            "0",
+            "1"
+          ],
+          "port": "5000",
+          "path": [
+            "service-tickets",
+            "1",
+            "remove-mechanic",
+            "1"
+          ]
+        }
+      },
+      "response": []
     }
   ]
 }

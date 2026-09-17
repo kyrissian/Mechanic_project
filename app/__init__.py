@@ -26,6 +26,11 @@ def create_app(config_class=DevelopmentConfig):
     db.init_app(app)
     ma.init_app(app)
 
+    # Deferred import: avoids a circular dependency, since
+    # error_handlers.py doesn't need anything from this module.
+    from app.error_handlers import register_error_handlers  # pylint: disable=import-outside-toplevel
+    register_error_handlers(app)
+
     # Models must be imported after db.init_app() so SQLAlchemy knows
     # about every table before anything (like db.create_all(), used in
     # tests) tries to create them. service_mechanics must come before

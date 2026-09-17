@@ -1,0 +1,44 @@
+name: Mechanic Shop API CI
+
+# Not required by the assignment -- added to carry over the CI/CD
+# habits from The Daily Haul into backend work too. No deploy stage
+# here (unlike that project's Vercel pipeline): this API isn't hosted
+# anywhere, so this workflow is test/lint-only.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    name: Test and Lint
+    runs-on: ubuntu-latest
+
+    steps:
+      # Step 1: pull down repository code for this job.
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # Step 2: use a consistent Python version and cache pip data.
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      # Step 3: install dependencies from requirements.txt.
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      # Step 4: run the full test suite. Tests use an in-memory
+      # SQLite database (TestingConfig), never a real MySQL server --
+      # so no database service or .env secrets are needed here at all.
+      - name: Run test suite
+        run: python -m pytest -v
+
+      # Step 5: lint gate. Runs after tests so a broken test fails
+      # fast, before spending time on style checks.
+      - name: Run Pylint
+        run: python -m pylint app tests config.py
