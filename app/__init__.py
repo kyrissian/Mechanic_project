@@ -35,10 +35,15 @@ def create_app(config_class=DevelopmentConfig):
     # SQLAlchemy) rather than to use the names directly, hence the
     # disable comment below.
     # pylint: disable=unused-import,import-outside-toplevel
-
     from app.models import customer, service_mechanics, mechanic, service_ticket
 
     from app.blueprints.customer import customer_bp
-    app.register_blueprint(customer_bp)
+    app.register_blueprint(customer_bp, url_prefix="/customers")
+
+    from app.blueprints.mechanic import mechanic_bp
+    app.register_blueprint(mechanic_bp, url_prefix="/mechanics")
+
+    from app.blueprints.service_ticket import service_ticket_bp
+    app.register_blueprint(service_ticket_bp, url_prefix="/service-tickets")
 
     return app

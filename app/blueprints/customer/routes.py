@@ -1,10 +1,11 @@
 """
 CRUD routes for the Customer resource.
 
-Follows standard REST conventions: the same /customers endpoint
-handles multiple operations, differentiated by HTTP method --
-GET /customers (all), GET /customers/<id> (one), POST /customers
-(create), PUT /customers/<id> (full update), DELETE /customers/<id>.
+Registered under the /customers url_prefix (see app/__init__.py), so
+these routes only need their path relative to that -- "" here means
+"/customers" in the full URL, "/<int:customer_id>" means
+"/customers/<id>". Follows standard REST conventions: the same
+endpoint handles multiple operations, differentiated by HTTP method.
 """
 
 from flask import request, jsonify
@@ -17,7 +18,7 @@ from app.blueprints.customer import customer_bp
 from app.blueprints.customer.schemas import customer_schema, customers_schema
 
 
-@customer_bp.route("/customers", methods=["POST"])
+@customer_bp.route("", methods=["POST"])
 def create_customer():
     """Create a new customer from the JSON request body."""
     try:
@@ -36,7 +37,7 @@ def create_customer():
     return customer_schema.jsonify(new_customer), 201
 
 
-@customer_bp.route("/customers", methods=["GET"])
+@customer_bp.route("", methods=["GET"])
 def get_customers():
     """Retrieve every customer."""
     query = select(Customer)
@@ -44,7 +45,7 @@ def get_customers():
     return customers_schema.jsonify(customers)
 
 
-@customer_bp.route("/customers/<int:customer_id>", methods=["GET"])
+@customer_bp.route("/<int:customer_id>", methods=["GET"])
 def get_customer(customer_id):
     """Retrieve a single customer by id."""
     customer = db.session.get(Customer, customer_id)
@@ -53,7 +54,7 @@ def get_customer(customer_id):
     return jsonify({"error": "Customer not found."}), 404
 
 
-@customer_bp.route("/customers/<int:customer_id>", methods=["PUT"])
+@customer_bp.route("/<int:customer_id>", methods=["PUT"])
 def update_customer(customer_id):
     """Replace an existing customer's fields with the JSON request body."""
     customer = db.session.get(Customer, customer_id)
@@ -72,7 +73,7 @@ def update_customer(customer_id):
     return customer_schema.jsonify(customer), 200
 
 
-@customer_bp.route("/customers/<int:customer_id>", methods=["DELETE"])
+@customer_bp.route("/<int:customer_id>", methods=["DELETE"])
 def delete_customer(customer_id):
     """Delete a customer by id."""
     customer = db.session.get(Customer, customer_id)

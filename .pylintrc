@@ -16,4 +16,11 @@
 # back from __init__.py. This is the standard, documented pattern for
 # structuring Flask blueprints across two files, not an accidental
 # circular dependency.
-disable=too-few-public-methods,too-many-ancestors,cyclic-import
+#
+# import-self: the same blueprint pattern above means each
+# __init__.py imports its own routes.py submodule using its full
+# package path (e.g. `from app.blueprints.customer import routes`
+# inside app/blueprints/customer/__init__.py) -- some Pylint
+# invocations read this as the module importing itself, though it's
+# actually importing a distinct submodule, not re-importing itself.
+disable=too-few-public-methods,too-many-ancestors,cyclic-import,import-self
