@@ -4,7 +4,8 @@ Routes for the ServiceTicket resource.
 Registered under the /service-tickets url_prefix (see app/__init__.py).
 Per the assignment, this resource only needs create, get-all, and the
 two mechanic-assignment routes -- deliberately no update/delete for
-the ticket itself, so completed work is never erased.
+the ticket itself, so completed work is never erased. The single-ticket
+GET below is extra credit, added for parity with Customer and Mechanic.
 """
 
 from flask import request, jsonify
@@ -41,6 +42,17 @@ def get_service_tickets():
     query = select(ServiceTicket)
     tickets = db.session.execute(query).scalars().all()
     return service_tickets_schema.jsonify(tickets)
+
+
+@service_ticket_bp.route("/<int:ticket_id>", methods=["GET"])
+def get_service_ticket(ticket_id):
+    """Retrieve a single service ticket by id. Not required by the
+    assignment (which only lists create/get-all/assign/remove), added
+    as extra credit for parity with Customer and Mechanic."""
+    ticket = db.session.get(ServiceTicket, ticket_id)
+    if ticket:
+        return service_ticket_schema.jsonify(ticket), 200
+    return jsonify({"error": "Service ticket not found."}), 404
 
 
 @service_ticket_bp.route(

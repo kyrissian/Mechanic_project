@@ -77,6 +77,29 @@ def test_get_service_tickets(client):
     assert len(response.json) == 2
 
 
+def test_get_single_service_ticket(client):
+    """GET /service-tickets/<id> should return that specific ticket's
+    data. Extra credit -- not required by the assignment, added for
+    parity with Customer and Mechanic."""
+    customer_id = create_test_customer(client)
+    created = client.post(
+        "/service-tickets", json=make_ticket_payload(customer_id)
+    ).json
+
+    response = client.get(f"/service-tickets/{created['id']}")
+
+    assert response.status_code == 200
+    assert response.json["vin"] == "1HGCM82633A004352"
+
+
+def test_get_single_service_ticket_not_found(client):
+    """GET /service-tickets/<id> should return a 404 for an id that
+    doesn't exist."""
+    response = client.get("/service-tickets/999")
+
+    assert response.status_code == 404
+
+
 def test_assign_mechanic_to_ticket(client):
     """PUT /service-tickets/<id>/assign-mechanic/<id> should add the
     mechanic to the ticket's list of assigned mechanics."""
