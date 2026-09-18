@@ -73,6 +73,63 @@ def test_create_service_ticket_rejects_invalid_customer_id(client):
     assert response.status_code == 404
 
 
+def test_create_service_ticket_rejects_short_vin(client):
+    """POST /service-tickets should reject a VIN shorter than the
+    real-world 17-character standard, not silently accept it."""
+    customer_id = create_test_customer(client)
+
+    response = client.post(
+        "/service-tickets", json=make_ticket_payload(customer_id, vin="ABC123")
+    )
+
+    assert response.status_code == 400
+    assert "vin" in response.json
+
+
+def test_create_service_ticket_rejects_long_vin(client):
+    """POST /service-tickets should reject a VIN longer than 17
+    characters."""
+    customer_id = create_test_customer(client)
+
+    response = client.post(
+        "/service-tickets",
+        json=make_ticket_payload(customer_id, vin="ABCDEFGHIJKLMNOPQR"),
+    )
+
+    assert response.status_code == 400
+    assert "vin" in response.json
+
+
+def test_create_service_ticket_rejects_lowercase_vin(client):
+    """POST /service-tickets should reject a VIN containing lowercase
+    letters -- real VINs are always uppercase."""
+    customer_id = create_test_customer(client)
+
+    response = client.post(
+        "/service-tickets",
+        json=make_ticket_payload(customer_id, vin="1hgcm82633a004352"),
+    )
+
+    assert response.status_code == 400
+    assert "vin" in response.json
+
+
+def test_create_service_ticket_rejects_excluded_letters(client):
+    """POST /service-tickets should reject a VIN containing I, O, or
+    Q -- these letters are excluded from real VINs per ISO 3779,
+    since they're too easily confused with 1, 0, and 9."""
+    customer_id = create_test_customer(client)
+
+    for excluded_letter in ("I", "O", "Q"):
+        vin = "1HGCM8263" + excluded_letter + "A00435" + "2"
+        response = client.post(
+            "/service-tickets", json=make_ticket_payload(customer_id, vin=vin)
+        )
+
+        assert response.status_code == 400
+        assert "vin" in response.json
+
+
 def test_get_service_tickets(client):
     """GET /service-tickets should return every ticket that's been created."""
     customer_id = create_test_customer(client)

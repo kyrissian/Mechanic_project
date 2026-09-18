@@ -2,6 +2,8 @@
 Marshmallow schema for the ServiceTicket model.
 """
 
+from marshmallow import validate
+
 from app.extensions import ma
 from app.models.service_ticket import ServiceTicket
 
@@ -24,6 +26,23 @@ class ServiceTicketSchema(ma.SQLAlchemyAutoSchema):
         include_fk = True
 
     id = ma.auto_field(dump_only=True)
+
+    # The model's db.String(17) column gives us a maximum-length
+    # validator automatically, but only a maximum -- a 1-character
+    # string was still accepted as a valid VIN. A real VIN is always
+    # exactly 17 characters (Length), and per ISO 3779 never contains
+    # the letters I, O, or Q -- they're deliberately excluded from the
+    # standard because they're too easily confused with 1, 0, and 9
+    # (Regexp). Both explicitly override the auto-derived field.
+    vin = ma.auto_field(
+        validate=[
+            validate.Length(equal=17),
+            validate.Regexp(
+                r"^[A-HJ-NPR-Z0-9]+$",
+                error="VIN may only contain uppercase letters and digits, excluding I, O, and Q.",
+            ),
+        ]
+    )
 
     # SQLAlchemyAutoSchema only generates fields from plain columns,
     # not relationship() attributes -- without this, the assign/remove
