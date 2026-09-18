@@ -96,6 +96,37 @@ def test_update_customer(client):
     assert response.json["name"] == "Jamie R. Updated"
 
 
+def test_update_customer_rejects_duplicate_email(client):
+    """PUT /customers/<id> should reject changing a customer's email
+    to one already used by a different customer."""
+    client.post("/customers", json=make_customer_payload())
+    other = client.post(
+        "/customers", json=make_customer_payload(name="Sam Diaz", email="sam@example.com")
+    ).json
+
+    response = client.put(
+        f"/customers/{other['id']}",
+        json=make_customer_payload(name="Sam Diaz"),
+    )
+
+    assert response.status_code == 400
+    assert "error" in response.json
+
+
+def test_update_customer_allows_keeping_own_email(client):
+    """PUT /customers/<id> should not reject a customer keeping their
+    own existing email while changing another field -- the duplicate
+    check must exclude the customer's own row."""
+    created = client.post("/customers", json=make_customer_payload()).json
+
+    response = client.put(
+        f"/customers/{created['id']}",
+        json=make_customer_payload(name="Jamie R. Updated"),
+    )
+
+    assert response.status_code == 200
+
+
 def test_update_customer_not_found(client):
     """PUT /customers/<id> should return a 404 for an id that doesn't exist."""
     response = client.put("/customers/999", json=make_customer_payload())

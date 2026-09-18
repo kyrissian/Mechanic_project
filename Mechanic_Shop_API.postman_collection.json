@@ -375,7 +375,7 @@
         "method": "PUT",
         "header": [],
         "url": {
-          "raw": "http://127.0.0.1:5000/service-tickets/1/remove-mechanic/1",
+          "raw": "http://127.0.0.1:5000/service-tickets/1/remove-mechanic/4",
           "protocol": "http",
           "host": [
             "127",
@@ -388,7 +388,7 @@
             "service-tickets",
             "1",
             "remove-mechanic",
-            "1"
+            "4"
           ]
         }
       },

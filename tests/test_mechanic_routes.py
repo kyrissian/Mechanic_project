@@ -96,6 +96,23 @@ def test_update_mechanic(client):
     assert response.json["salary"] == 60000.00
 
 
+def test_update_mechanic_rejects_duplicate_email(client):
+    """PUT /mechanics/<id> should reject changing a mechanic's email
+    to one already used by a different mechanic."""
+    client.post("/mechanics", json=make_mechanic_payload())
+    other = client.post(
+        "/mechanics", json=make_mechanic_payload(name="Sam Diaz", email="sam@example.com")
+    ).json
+
+    response = client.put(
+        f"/mechanics/{other['id']}",
+        json=make_mechanic_payload(name="Sam Diaz"),
+    )
+
+    assert response.status_code == 400
+    assert "error" in response.json
+
+
 def test_update_mechanic_not_found(client):
     """PUT /mechanics/<id> should return a 404 for an id that doesn't exist."""
     response = client.put("/mechanics/999", json=make_mechanic_payload())

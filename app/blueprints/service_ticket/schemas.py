@@ -25,6 +25,19 @@ class ServiceTicketSchema(ma.SQLAlchemyAutoSchema):
 
     id = ma.auto_field(dump_only=True)
 
+    # SQLAlchemyAutoSchema only generates fields from plain columns,
+    # not relationship() attributes -- without this, the assign/remove
+    # -mechanic routes would work correctly against the database, but
+    # a ticket's response would never show which mechanics are
+    # actually assigned to it, making a successful assignment
+    # indistinguishable from a silent no-op at the API level.
+    mechanic_ids = ma.Method("get_mechanic_ids", dump_only=True)
+
+    def get_mechanic_ids(self, obj):
+        """Returns the ids of every mechanic currently assigned to
+        this ticket, read directly from the relationship."""
+        return [mechanic.id for mechanic in obj.mechanics]
+
 
 service_ticket_schema = ServiceTicketSchema()
 service_tickets_schema = ServiceTicketSchema(many=True)

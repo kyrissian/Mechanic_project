@@ -13,6 +13,7 @@ from marshmallow import ValidationError
 from sqlalchemy import select
 
 from app.extensions import db
+from app.models.customer import Customer
 from app.models.service_ticket import ServiceTicket
 from app.models.mechanic import Mechanic
 from app.blueprints.service_ticket import service_ticket_bp
@@ -29,6 +30,18 @@ def create_service_ticket():
         ticket_data = service_ticket_schema.load(request.json)
     except ValidationError as e:
         return jsonify(e.messages), 400
+
+    # Explicit check rather than relying on the database's own foreign
+    # key enforcement: MySQL (production) would reject an invalid
+    # customer_id, but our test database (SQLite) does not enforce
+    # foreign keys by default, so relying on the database alone would
+    # let this bug through in tests while only surfacing in
+    # production as an unhelpful generic error. Checking here also
+    # means the response is a clean 404 either way, not a raw
+    # IntegrityError caught by the global error handler.
+    customer = db.session.get(Customer, ticket_data["customer_id"])
+    if not customer:
+        return jsonify({"error": "Customer not found."}), 404
 
     new_ticket = ServiceTicket(**ticket_data)
     db.session.add(new_ticket)

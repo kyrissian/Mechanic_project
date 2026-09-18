@@ -4,9 +4,9 @@ CRUD routes for the Mechanic resource.
 Registered under the /mechanics url_prefix (see app/__init__.py), so
 these routes only need their path relative to that -- "" here means
 "/mechanics" in the full URL, "/<int:mechanic_id>" means
-"/mechanics/<id>". The assignment only requires Create, Read-all,
-Update, and Delete -- the single-mechanic GET below is extra credit,
-added for parity with the Customer resource.
+"/mechanics/<id>". Per the assignment, only Create, Read-all, Update,
+and Delete are required -- the single-mechanic GET below is extra
+credit, added for parity with the Customer resource.
 """
 
 from flask import request, jsonify
@@ -68,6 +68,15 @@ def update_mechanic(mechanic_id):
         mechanic_data = mechanic_schema.load(request.json)
     except ValidationError as e:
         return jsonify(e.messages), 400
+
+    # Same duplicate-email check as create_mechanic, but excluding
+    # this mechanic's own row.
+    query = select(Mechanic).where(
+        Mechanic.email == mechanic_data["email"], Mechanic.id != mechanic_id
+    )
+    existing_mechanic = db.session.execute(query).scalars().first()
+    if existing_mechanic:
+        return jsonify({"error": "Email already associated with an account."}), 400
 
     for key, value in mechanic_data.items():
         setattr(mechanic, key, value)

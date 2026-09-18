@@ -23,4 +23,11 @@
 # inside app/blueprints/customer/__init__.py) -- some Pylint
 # invocations read this as the module importing itself, though it's
 # actually importing a distinct submodule, not re-importing itself.
-disable=too-few-public-methods,too-many-ancestors,cyclic-import,import-self
+#
+# no-member: Flask-Marshmallow's `ma` object dynamically proxies
+# several marshmallow.fields classes (Method, Nested, etc.) as
+# attributes via __getattr__ -- this is real, working functionality
+# (verified against a live request before this was added), just
+# invisible to Pylint's static analysis since it can't see attributes
+# attached at runtime rather than defined on the class itself.
+disable=too-few-public-methods,too-many-ancestors,cyclic-import,import-self,no-member

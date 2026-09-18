@@ -1,11 +1,10 @@
 """
 CRUD routes for the Customer resource.
 
-Registered under the /customers url_prefix (see app/__init__.py), so
-these routes only need their path relative to that -- "" here means
-"/customers" in the full URL, "/<int:customer_id>" means
-"/customers/<id>". Follows standard REST conventions: the same
-endpoint handles multiple operations, differentiated by HTTP method.
+Follows standard REST conventions: the same /customers endpoint
+handles multiple operations, differentiated by HTTP method --
+GET /customers (all), GET /customers/<id> (one), POST /customers
+(create), PUT /customers/<id> (full update), DELETE /customers/<id>.
 """
 
 from flask import request, jsonify
@@ -65,6 +64,17 @@ def update_customer(customer_id):
         customer_data = customer_schema.load(request.json)
     except ValidationError as e:
         return jsonify(e.messages), 400
+
+    # Same duplicate-email check as create_customer, but excluding
+    # this customer's own row -- otherwise updating a customer
+    # without changing their email would incorrectly flag their own
+    # existing email as "already in use."
+    query = select(Customer).where(
+        Customer.email == customer_data["email"], Customer.id != customer_id
+    )
+    existing_customer = db.session.execute(query).scalars().first()
+    if existing_customer:
+        return jsonify({"error": "Email already associated with an account."}), 400
 
     for key, value in customer_data.items():
         setattr(customer, key, value)

@@ -62,6 +62,17 @@ def test_create_service_ticket_rejects_missing_field(client):
     assert "vin" in response.json
 
 
+def test_create_service_ticket_rejects_invalid_customer_id(client):
+    """POST /service-tickets should return a 404, not silently create
+    an orphaned ticket, when customer_id doesn't refer to a real
+    customer."""
+    response = client.post(
+        "/service-tickets", json=make_ticket_payload(customer_id=999)
+    )
+
+    assert response.status_code == 404
+
+
 def test_get_service_tickets(client):
     """GET /service-tickets should return every ticket that's been created."""
     customer_id = create_test_customer(client)
@@ -114,6 +125,7 @@ def test_assign_mechanic_to_ticket(client):
     )
 
     assert response.status_code == 200
+    assert mechanic_id in response.json["mechanic_ids"]
 
 
 def test_assign_mechanic_rejects_duplicate_assignment(client):
@@ -170,6 +182,7 @@ def test_remove_mechanic_from_ticket(client):
     )
 
     assert response.status_code == 200
+    assert mechanic_id not in response.json["mechanic_ids"]
 
 
 def test_remove_mechanic_rejects_when_not_assigned(client):
@@ -186,3 +199,25 @@ def test_remove_mechanic_rejects_when_not_assigned(client):
     )
 
     assert response.status_code == 400
+
+
+def test_remove_mechanic_ticket_not_found(client):
+    """Removing a mechanic from a ticket id that doesn't exist should
+    return a 404."""
+    mechanic_id = create_test_mechanic(client)
+
+    response = client.put(f"/service-tickets/999/remove-mechanic/{mechanic_id}")
+
+    assert response.status_code == 404
+
+
+def test_remove_mechanic_mechanic_not_found(client):
+    """Removing a mechanic id that doesn't exist should return a 404."""
+    customer_id = create_test_customer(client)
+    ticket_id = client.post(
+        "/service-tickets", json=make_ticket_payload(customer_id)
+    ).json["id"]
+
+    response = client.put(f"/service-tickets/{ticket_id}/remove-mechanic/999")
+
+    assert response.status_code == 404

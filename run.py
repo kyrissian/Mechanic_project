@@ -2,7 +2,7 @@
 Entry point for running the app against the real database.
 
 Running this file directly creates every table our models define
-(Customer, Mechanic, ServiceTicket, st_mechanic) in the actual MySQL
+(Customer, Mechanic, ServiceTicket, service_mechanics) in the actual MySQL
 database configured in .env -- unlike our tests, which only ever
 touch the temporary, in-memory database and never create anything
 real.
