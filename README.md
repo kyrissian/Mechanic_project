@@ -12,6 +12,8 @@
 
 A Flask + SQLAlchemy + MySQL backend for a mechanic shop, managing customers, mechanics, and service tickets, with a Marshmallow-validated REST API built on the Application Factory pattern. Built for the "Database Design and Planning with ERDs," "SQLAlchemy Relationships," "Marshmallow Schemas & CRUD Endpoints," and "Application Factory Pattern" course modules.
 
+**Author:** Kathy Booth (with contributions from Claude and GitHub Copilot)
+
 ---
 
 ## Table of Contents
@@ -201,7 +203,7 @@ Mechanic_project/
   requirements.txt
   config.py                   # DevelopmentConfig (MySQL) / TestingConfig (SQLite)
   run.py                      # entry point: builds real MySQL tables, starts dev server
-  mechanic_shop_api.postman_collection.json   # exported Postman requests for every endpoint
+  Mechanic_Shop_API.postman_collection.json   # exported Postman requests for every endpoint
   .github/
     workflows/
       ci.yml                   # runs pytest + pylint on push/PR
@@ -288,16 +290,16 @@ Run the full suite:
 python -m pytest -v
 ```
 
-Currently: **41 tests, all passing.**
+Currently: **47 tests, all passing.**
 
 ### Testing with Postman
 
-In addition to the automated test suite, every endpoint was also manually verified against the real running app and the real MySQL database, using Postman. The saved requests are exported as `mechanic_shop_api.postman_collection.json` in the project root.
+In addition to the automated test suite, every endpoint was also manually verified against the real running app and the real MySQL database, using Postman. The saved requests are exported as `Mechanic_Shop_API.postman_collection.json` in the project root.
 
 To use it:
 
 1. Open Postman.
-2. Click **Import** and select `mechanic_shop_api.postman_collection.json`.
+2. Click **Import** and select `Mechanic_Shop_API.postman_collection.json`.
 3. Make sure the app is running locally (`python run.py`).
 4. Open the `Mechanic Shop API` collection and send any request — each one is pre-filled with the correct method, URL, and (where needed) a sample JSON body.
 
@@ -310,3 +312,15 @@ See [API Endpoints](#api-endpoints) above for the full list covered.
 `.github/workflows/ci.yml` runs on every push and pull request to `main`: installs dependencies from `requirements.txt`, runs the full pytest suite, then runs Pylint. Because tests use an in-memory SQLite database rather than a real MySQL connection, this workflow needs no database service or secrets configured at all.
 
 This wasn't required by the assignment -- it's carried over from CI/CD coursework on a prior project. Unlike that project, this API isn't deployed anywhere, so there's no CD (deployment) stage here, which is also why this file is named `ci.yml` rather than `main.yml`.
+
+---
+
+## Submission Checklist
+
+- [x] Blueprints registered for `customer`, `mechanic`, and `service_ticket`, each with its own `url_prefix`
+- [x] Full CRUD implemented for `Customer` and `Mechanic`; `ServiceTicket` create/list/assign-mechanic/remove-mechanic (no update/delete, by design)
+- [x] Marshmallow schemas validate and serialize every resource
+- [x] Postman collection included in the repo and covers every endpoint
+- [x] 47 automated tests passing (`python -m pytest -v`)
+- [x] Pylint clean (`python -m pylint app tests config.py`)
+- [x] CI workflow passing on GitHub Actions
