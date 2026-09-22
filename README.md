@@ -35,6 +35,15 @@ A Flask + SQLAlchemy + MySQL backend for a mechanic shop, managing customers, me
 
 ## Changelog
 
+### 2026-09-22: Extended Rate Limiting and Caching Coverage
+
+- Added a route-by-route review of where rate limiting and caching actually make sense, rather than applying the lesson's example to a single route each. See [Rate Limiting & Caching](#rate-limiting--caching) for the full reasoning per resource.
+- Rate limited `DELETE /customers/<id>` and `DELETE /mechanics/<id>` to 10 requests per hour per client IP -- deletion is the most destructive route on each resource, so the limit exists to contain a compromised client or a buggy script looping through ids, not to throttle normal use.
+- Added a global default limit (`200 per day, 50 per hour`) on the `Limiter` instance itself, applying automatically to every route that has no route-specific `@limiter.limit`, as a backstop against scraping or a runaway polling loop.
+- Extended caching to `GET /mechanics/<id>` (single mechanic), using `@cache.memoize()` instead of `@cache.cached()` so each mechanic id gets its own cache entry. `update_mechanic` and `delete_mechanic` now clear both the list cache and that mechanic's own cache entry with `cache.delete_memoized()`.
+- Deliberately did **not** extend caching to `Customer` or `ServiceTicket` routes -- both change far too often relative to how often they're read for a cache to pay off. See [Rate Limiting & Caching](#rate-limiting--caching).
+- 8 new tests: 4 for the new rate limits (mechanic creation, both delete routes, the global default), 3 for single-mechanic caching and its invalidation on update/delete, and 1 recovering a missing-import bug in `test_mechanic_caching.py` caught via Pylint/Pylance.
+
 ### 2026-09-21: Rate Limiting and Caching
 
 - Added Flask-Limiter, rate limiting `POST /customers` to 5 requests per hour per client IP -- customer creation is the write path most open to abuse (junk records, or probing which emails are already registered), and rejected requests count toward the limit specifically to stop that kind of probing. Added a dedicated `429` JSON error handler in `app/error_handlers.py` so a client sees which limit it hit, not just Flask-Limiter's default plain-text response.
@@ -194,19 +203,37 @@ Deliberately no `PUT`/`DELETE` for the ticket resource itself -- a completed or 
 
 ## Rate Limiting & Caching
 
-| Route             | Behavior                             | Why                                                                                                                                                                                                                                                     |
-| ----------------- | ------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `POST /customers` | Rate limited: 5 requests / hour / IP | Creation is the write path most open to abuse -- an unlimited endpoint could be flooded with junk records or used to probe which emails are already registered. Rejected (400) attempts still count toward the limit, which is what stops that probing. |
-| `GET /mechanics`  | Cached: 60 seconds                   | The mechanic roster is read often (e.g. every time a mechanic is assigned to a ticket) but changes rarely, so most requests can be served from memory instead of hitting the database.                                                                  |
+Every route decision below comes down to one question: **how often is this route abused or destructive (for limiting), and how often is its data read versus written (for caching)?**
 
-No other routes are limited or cached: `/customers` reads return personal data that changes on every write, so they're always fresh; `/service-tickets` changes too often for a timed cache to help.
+### Rate limiting
+
+| Route                    | Limit                                      | Why                                                                                                                                                                                                                                                            |
+| ------------------------ | ------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `POST /customers`        | 5 / hour / IP                              | Creation is the write path most open to abuse -- junk records, or probing which emails are already registered. Rejected (400) attempts still count toward the limit, which is what stops that probing.                                                         |
+| `POST /mechanics`        | 5 / hour / IP                              | Same reasoning as customer creation. In practice this limit never touches legitimate use -- a real shop only registers a handful of mechanics total.                                                                                                           |
+| `DELETE /customers/<id>` | 10 / hour / IP                             | Deletion is the most destructive route on the resource. The limit guards against a compromised client or a buggy script looping through ids and wiping records, not against a person manually cleaning up a few records.                                       |
+| `DELETE /mechanics/<id>` | 10 / hour / IP                             | Same reasoning as customer deletion.                                                                                                                                                                                                                           |
+| Every other route        | 200 / day, 50 / hour / IP (global default) | A floor applied to the whole app via `default_limits` on the `Limiter` instance itself, catching routes with no limit of their own (reads, updates, ticket assignment) -- a backstop against scraping or a runaway polling loop, not a throttle on normal use. |
+
+`PUT` (update) routes and `GET` routes carry no route-specific limit: updates don't grow or destroy data, so their damage ceiling is much lower than create or delete, and reads aren't destructive at all. Both still fall under the global default above.
+
+### Caching
+
+| Route                                | Cached?                             | Why                                                                                                                                                                                                                                       |
+| ------------------------------------ | ----------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `GET /mechanics`                     | Yes, 60s                            | The mechanic roster is read constantly (e.g. every time someone assigns a mechanic to a ticket) but written to rarely (mechanics are hired occasionally, not daily). High read-to-write ratio is exactly what caching is for.             |
+| `GET /mechanics/<id>`                | Yes, 60s, per id (`@cache.memoize`) | Same reasoning as the list. Memoized per `mechanic_id` so `update_mechanic`/`delete_mechanic` can clear one mechanic's entry without invalidating every other mechanic's cached lookup.                                                   |
+| `GET /customers` (list/single)       | No                                  | Customers are created and updated constantly as new work comes in -- caching would mean invalidating almost as often as it's read, adding complexity for little benefit, on top of holding personal data in memory unnecessarily.         |
+| `GET /service-tickets` (list/single) | No                                  | The most write-heavy resource in the app -- tickets are created and mechanics are assigned/removed throughout the day. A mechanic checking whether they've just been assigned a ticket needs the real answer, not one up to a minute old. |
+
+Invalidation is explicit, not timeout-only: `create_mechanic` clears the list cache; `update_mechanic` and `delete_mechanic` clear both the list cache and that mechanic's own memoized entry via `cache.delete_memoized()`. A client making a write through the API always sees its own change on the very next `GET` -- the 60-second timeout only matters for a change made outside the API entirely (e.g. directly in MySQL Workbench).
+
+**Known limitation:** caching `GET /mechanics/<id>` also caches a `404` for an id that doesn't exist yet. `create_mechanic` has no way to know in advance which id a new mechanic will be assigned, so it can't invalidate that entry ahead of time. A client that requests an unused id right before it's created could see a stale 404 for up to 60 seconds. Accepted as a narrow edge case rather than adding complexity to solve it.
 
 A limited or cached response carries the same status codes and JSON shape described in [Error Handling](#error-handling) and [API Endpoints](#api-endpoints) above, with two additions:
 
-- Exceeding the limit on `POST /customers` returns `429` with `{"error": "Rate limit exceeded", "detail": "5 per 1 hour"}`.
+- Exceeding any limit returns `429` with `{"error": "Rate limit exceeded", "detail": "..."}`, where `detail` names the specific limit that was hit (e.g. `"5 per 1 hour"` or `"50 per 1 hour"` for the global default).
 - Every response includes `X-RateLimit-Limit`, `X-RateLimit-Remaining`, and `X-RateLimit-Reset` headers, so the current state of the limit is visible in Postman without waiting to be blocked.
-
-Cache invalidation is explicit, not timeout-only: `create_mechanic`, `update_mechanic`, and `delete_mechanic` all call `cache.delete()` on the cached key immediately after committing, so a client making a write through the API always sees its own change on the very next `GET /mechanics` -- the 60-second timeout only matters for a change made outside the API (e.g. directly in MySQL Workbench).
 
 ---
 
@@ -216,7 +243,7 @@ Two global error handlers (`app/error_handlers.py`) guarantee every response fro
 
 - Any HTTP-level error (unmatched route → 404, wrong HTTP method → 405, malformed JSON body → 400, wrong `Content-Type` header → 415, etc.) returns `{"error": "..."}` with the matching status code, instead of Flask's default HTML error page.
 - Any unexpected exception in application code is caught and logged server-side, and returns a generic `{"error": "An unexpected server error occurred."}` with a 500, rather than leaking a raw traceback to the client.
-- Exceeding a rate limit returns `429` with `{"error": "Rate limit exceeded", "detail": "..."}`, where `detail` names the specific limit that was hit (e.g. `"5 per 1 hour"`). Flask checks status-code handlers before class handlers, so this one takes priority over the generic HTTP-level handler above.
+- Exceeding a rate limit returns `429` with `{"error": "Rate limit exceeded", "detail": "..."}`, where `detail` names the specific limit that was hit. Flask checks status-code handlers before class handlers, so this one takes priority over the generic HTTP-level handler above.
 
 This is separate from, and doesn't interfere with, the specific `{"error": "Customer not found."}`-style responses already written into each route for expected cases like a missing id or a duplicate email -- those are returned directly by the view functions and never touch these handlers at all.
 
@@ -300,6 +327,8 @@ Each blueprint is registered in `app/__init__.py` with a `url_prefix` matching t
 - Model files import `service_mechanics.py`'s `service_mechanics` table by string name (`secondary="service_mechanics"`) rather than importing the `Table` object directly, avoiding another circular-import path between `mechanic.py` and `service_ticket.py`.
 - `ServiceTicketSchema` sets `include_fk = True` in its `Meta` class specifically because `SQLAlchemyAutoSchema` excludes foreign key columns by default -- without it, `customer_id` (the field a client needs to send when creating a ticket) would be silently missing from the schema entirely.
 - `cache = Cache()` in `extensions.py` is deliberately created with no config, unlike the lesson's example. Config passed directly to the `Cache()` constructor overrides `app.config`, which would make it impossible for `TestingConfig` to switch caching off -- so the backend (`SimpleCache`, `NullCache`) is set entirely through `config.py` instead.
+- `limiter = Limiter(..., default_limits=[...])` sets its global floor on the constructor rather than passing `app=app` directly, matching the rest of this project's `init_app()`-based wiring: the instance is created without an app in `extensions.py` and bound to the real app later, inside `create_app()`.
+- `get_mechanic` (single-mechanic lookup) uses `@cache.memoize()` instead of `@cache.cached()`. `memoize` keys the cache entry by the function's arguments automatically, so each `mechanic_id` gets its own independent entry -- letting `update_mechanic`/`delete_mechanic` invalidate exactly one mechanic's cached lookup via `cache.delete_memoized(get_mechanic, mechanic_id)` without disturbing any other mechanic's cached data.
 
 ---
 
@@ -312,8 +341,8 @@ Each model has its own test file, written alongside the model as it was built, p
 - **`test_customer_model.py`** / **`test_customer_routes.py`** — model-level creation and unique-email enforcement; every `/customers` endpoint including duplicate-email and missing-field rejection, and 404s for bad ids.
 - **`test_mechanic_model.py`** / **`test_mechanic_routes.py`** — model-level creation and the many-to-many relationship to tickets; every `/mechanics` endpoint including the extra-credit get-one route.
 - **`test_service_ticket_model.py`** / **`test_service_ticket_routes.py`** — model-level creation and the many-to-many relationship to mechanics; every `/service-tickets` endpoint including assign/remove-mechanic edge cases (duplicate assignment, removing an unassigned mechanic, ticket/mechanic not found).
-- **`test_rate_limiting.py`** — confirms `POST /customers` allows 5 requests per hour then returns 429; that rejected requests still count toward the limit; that the limit doesn't block other routes; that rate-limit headers are present; and that the default test config leaves rate limiting off.
-- **`test_mechanic_caching.py`** — confirms `GET /mechanics` is served from cache (a direct database insert the API never saw stays invisible until the cache clears); that caching is off by default in tests; and that create, update, and delete on `/mechanics` each immediately refresh the cached list.
+- **`test_rate_limiting.py`** — confirms `POST /customers` and `POST /mechanics` each allow 5 requests per hour then return 429; that `DELETE /customers/<id>` and `DELETE /mechanics/<id>` each allow 10 requests per hour then return 429 (counting even 404s, since repeated deletion attempts on the same guessed id are exactly what the limit guards against); that rejected requests still count toward a limit; that a limit on one route doesn't block others; that rate-limit headers are present; that the global default limit applies to a route with no route-specific limit of its own; and that the default test config leaves rate limiting off entirely.
+- **`test_mechanic_caching.py`** — confirms `GET /mechanics` and `GET /mechanics/<id>` are both served from cache (a direct database insert or edit the API never saw stays invisible until the cache clears); that caching is off by default in tests; and that create, update, and delete on `/mechanics` each immediately refresh the relevant cache entries, including the single-mechanic cache correctly returning 404 right after a delete.
 - **`test_error_handlers.py`** — confirms unmatched routes, wrong HTTP methods, malformed JSON, and wrong `Content-Type` all return consistent JSON rather than Flask's default HTML error pages.
 
 Tests run against a temporary in-memory SQLite database (via `TestingConfig`), never the real MySQL database — so the suite is fast and never at risk of touching or corrupting real data.
@@ -324,7 +353,7 @@ Run the full suite:
 python -m pytest -v
 ```
 
-Currently: **61 tests, all passing.**
+Currently: **68 tests, all passing.**
 
 ### Testing with Postman
 
@@ -354,8 +383,9 @@ This wasn't required by the assignment -- it's carried over from CI/CD coursewor
 - [x] Blueprints registered for `customer`, `mechanic`, and `service_ticket`, each with its own `url_prefix`
 - [x] Full CRUD implemented for `Customer` and `Mechanic`; `ServiceTicket` create/list/assign-mechanic/remove-mechanic (no update/delete, by design)
 - [x] Marshmallow schemas validate and serialize every resource
-- [x] `POST /customers` rate limited (5/hour/IP); `GET /mechanics` cached (60s) with explicit invalidation on write
+- [x] Rate limiting: 5/hour on customer and mechanic creation, 10/hour on customer and mechanic deletion, 200/day + 50/hour global default on every other route
+- [x] Caching: `GET /mechanics` and `GET /mechanics/<id>` cached (60s) with explicit invalidation on create/update/delete
 - [x] Postman collection included in the repo and covers every endpoint
-- [x] 61 automated tests passing (`python -m pytest -v`)
+- [x] 68 automated tests passing (`python -m pytest -v`)
 - [x] Pylint clean (`python -m pylint app tests config.py`)
 - [x] CI workflow passing on GitHub Actions

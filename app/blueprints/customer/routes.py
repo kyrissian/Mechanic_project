@@ -6,9 +6,12 @@ handles multiple operations, differentiated by HTTP method --
 GET /customers (all), GET /customers/<id> (one), POST /customers
 (create), PUT /customers/<id> (full update), DELETE /customers/<id>.
 
-Customer creation is rate limited (see create_customer). Customer reads
-are intentionally not cached: they contain personal data and change
-whenever a customer is created, updated, or deleted.
+Customer creation and deletion are rate limited (see create_customer
+and delete_customer). Every route in the app also carries a global
+default limit (200/day, 50/hour) set on the Limiter itself in
+extensions.py. Customer reads are intentionally not cached: they
+contain personal data and change whenever a customer is created,
+updated, or deleted.
 """
 
 from flask import request, jsonify
@@ -97,8 +100,18 @@ def update_customer(customer_id):
 
 
 @customer_bp.route("/<int:customer_id>", methods=["DELETE"])
+@limiter.limit("10 per hour")
 def delete_customer(customer_id):
-    """Delete a customer by id."""
+    """Delete a customer by id.
+
+    Rate limited to 10 requests per hour per client IP. Deletion is the
+    most destructive route on this resource, so the limit exists to
+    contain a compromised client or a buggy script looping through ids
+    and wiping records, not to throttle ordinary use -- a person
+    manually cleaning up test data would rarely hit 10 deletes in an
+    hour. As with create_customer, attempts on an id that doesn't exist
+    (404) still count toward the limit.
+    """
     customer = db.session.get(Customer, customer_id)
     if not customer:
         return jsonify({"error": "Customer not found."}), 404

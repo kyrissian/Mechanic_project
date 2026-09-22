@@ -27,8 +27,16 @@ db = SQLAlchemy()
 ma = Marshmallow()
 
 # Rate limiter: identifies each client by IP address so limits apply per
-# client. Limits themselves are set per route with @limiter.limit(...).
-limiter = Limiter(key_func=get_remote_address)
+# client. default_limits is a floor applied to EVERY route automatically,
+# including ones with no @limiter.limit of their own -- a backstop against
+# scraping or a runaway client loop on routes we never thought to protect
+# individually. Routes with their own @limiter.limit (create_customer,
+# create_mechanic, the delete routes) are always stricter than this floor,
+# so both limits are tracked but the tighter one is always what triggers.
+limiter = Limiter(
+    key_func=get_remote_address,
+    default_limits=["200 per day", "50 per hour"],
+)
 
 # Cache: intentionally created with no config. The backend (SimpleCache in
 # development, NullCache in tests) comes from config.py, because config

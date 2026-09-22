@@ -69,3 +69,47 @@ def test_delete_mechanic_refreshes_cached_list(cached_client):
     cached_client.delete(f"/mechanics/{created['id']}")
 
     assert cached_client.get("/mechanics").json == []
+
+
+def test_get_single_mechanic_is_served_from_cache(cached_client):
+    """Once a single mechanic's data is cached, a change the API never
+    saw doesn't appear in GET /mechanics/<id> until the cache clears."""
+    created = cached_client.post("/mechanics", json=make_mechanic_payload()).json
+    mechanic_id = created["id"]
+    cached_client.get(f"/mechanics/{mechanic_id}")  # prime the cache
+
+    mechanic = _db.session.get(Mechanic, mechanic_id)
+    mechanic.salary = 99999.00
+    _db.session.commit()  # bypasses the API, so nothing invalidates the cache
+
+    response = cached_client.get(f"/mechanics/{mechanic_id}")
+    assert response.json["salary"] == 55000.00
+
+
+def test_update_mechanic_refreshes_cached_single_mechanic(cached_client):
+    """Updating a mechanic clears its own cached entry, not just the
+    list, so a follow-up single lookup shows the new values immediately."""
+    created = cached_client.post("/mechanics", json=make_mechanic_payload()).json
+    mechanic_id = created["id"]
+    cached_client.get(f"/mechanics/{mechanic_id}")  # prime the cache
+
+    cached_client.put(
+        f"/mechanics/{mechanic_id}",
+        json=make_mechanic_payload(salary=60000.00),
+    )
+
+    response = cached_client.get(f"/mechanics/{mechanic_id}")
+    assert response.json["salary"] == 60000.00
+
+
+def test_delete_mechanic_refreshes_cached_single_mechanic(cached_client):
+    """Deleting a mechanic clears its cached entry, so a follow-up
+    single lookup correctly returns 404 instead of stale cached data."""
+    created = cached_client.post("/mechanics", json=make_mechanic_payload()).json
+    mechanic_id = created["id"]
+    cached_client.get(f"/mechanics/{mechanic_id}")  # prime the cache
+
+    cached_client.delete(f"/mechanics/{mechanic_id}")
+
+    response = cached_client.get(f"/mechanics/{mechanic_id}")
+    assert response.status_code == 404

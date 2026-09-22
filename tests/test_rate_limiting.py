@@ -1,4 +1,7 @@
-"""Tests for rate limiting on POST /customers (5 per hour per client)."""
+"""Tests for rate limiting: route-specific limits on customer/mechanic
+create and delete, plus the global default applied to every route."""
+
+from tests.conftest import make_mechanic_payload
 
 
 def make_customer_payload(index=0, **overrides):
@@ -11,16 +14,6 @@ def make_customer_payload(index=0, **overrides):
     }
     payload.update(overrides)
     return payload
-
-
-def make_mechanic_payload():
-    """Default JSON body for creating a mechanic."""
-    return {
-        "name": "Alex Chen",
-        "email": "alex@example.com",
-        "phone": "555-987-6543",
-        "salary": 55000.00,
-    }
 
 
 def test_create_customer_blocked_after_five_requests(rate_limited_client):
@@ -77,3 +70,57 @@ def test_rate_limiting_is_disabled_in_default_test_config(client):
     for i in range(6):
         response = client.post("/customers", json=make_customer_payload(i))
         assert response.status_code == 201
+
+
+def test_create_mechanic_blocked_after_five_requests(rate_limited_client):
+    """POST /mechanics carries the same 5-per-hour limit as customer
+    creation, for the same reason: creation is the write path most
+    open to abuse."""
+    for i in range(5):
+        response = rate_limited_client.post(
+            "/mechanics", json=make_mechanic_payload(email=f"mech{i}@example.com")
+        )
+        assert response.status_code == 201
+
+    response = rate_limited_client.post(
+        "/mechanics", json=make_mechanic_payload(email="mech5@example.com")
+    )
+
+    assert response.status_code == 429
+
+
+def test_delete_customer_blocked_after_ten_requests(rate_limited_client):
+    """The 11th DELETE /customers/<id> within an hour returns 429.
+    Deletion counts toward the limit regardless of outcome, so hammering
+    a nonexistent id (404 each time) still trips it -- deletion is
+    destructive, so the limit guards against a runaway loop wiping
+    records, not just against successful deletes."""
+    for _ in range(10):
+        response = rate_limited_client.delete("/customers/999")
+        assert response.status_code == 404
+
+    response = rate_limited_client.delete("/customers/999")
+
+    assert response.status_code == 429
+
+
+def test_delete_mechanic_blocked_after_ten_requests(rate_limited_client):
+    """Same guarantee as the customer delete limit, for mechanics."""
+    for _ in range(10):
+        response = rate_limited_client.delete("/mechanics/999")
+        assert response.status_code == 404
+
+    response = rate_limited_client.delete("/mechanics/999")
+
+    assert response.status_code == 429
+
+
+def test_default_limit_applies_to_unlimited_routes(rate_limited_client):
+    """A route with no route-specific @limiter.limit -- here, GET
+    /customers -- still carries the global default (200/day, 50/hour)
+    set on the Limiter itself, shown by rate-limit headers being
+    present even though nothing decorates the route directly."""
+    response = rate_limited_client.get("/customers")
+
+    assert response.status_code == 200
+    assert "X-RateLimit-Limit" in response.headers
