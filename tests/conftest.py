@@ -7,12 +7,30 @@ before yielding control to the test. Tearing tables down after each
 test (rather than reusing one database across the whole test run)
 means tests can never leak state into each other -- one test creating
 a customer can't cause a different test to unexpectedly see it.
+
+TestingConfig switches rate limiting and caching off so the rest of
+the suite is unaffected by them. The two extra fixtures at the bottom
+(`rate_limited_client`, `cached_client`) opt back in to exactly one of
+those features each, for the tests that exercise it.
 """
 
 import pytest
 from app import create_app
+from app.extensions import cache, limiter
 from app.extensions import db as _db
 from config import TestingConfig
+
+
+class RateLimitedTestConfig(TestingConfig):
+    """TestingConfig with rate limiting switched back on."""
+
+    RATELIMIT_ENABLED = True
+
+
+class CachedTestConfig(TestingConfig):
+    """TestingConfig with a real in-memory cache instead of NullCache."""
+
+    CACHE_TYPE = "SimpleCache"
 
 
 @pytest.fixture
@@ -48,6 +66,41 @@ def client(app):
     return app.test_client()
 
 
+@pytest.fixture
+def rate_limited_client():
+    """A test client for an app with rate limiting ENABLED.
+
+    The limiter is a module-level singleton, so its request counters
+    are reset before and after the test; otherwise requests counted in
+    one test could push the next test over its limit.
+    """
+    flask_app = create_app(RateLimitedTestConfig)
+
+    with flask_app.app_context():
+        _db.create_all()
+        limiter.reset()
+        yield flask_app.test_client()
+        limiter.reset()
+        _db.drop_all()
+
+
+@pytest.fixture
+def cached_client():
+    """A test client for an app with a real in-memory cache ENABLED.
+
+    The cache is cleared before and after the test as a safeguard so a
+    cached response can never outlive the test that created it.
+    """
+    flask_app = create_app(CachedTestConfig)
+
+    with flask_app.app_context():
+        _db.create_all()
+        cache.clear()
+        yield flask_app.test_client()
+        cache.clear()
+        _db.drop_all()
+
+
 def make_service_ticket_kwargs(**overrides):
     """Default field values for constructing a ServiceTicket in
     tests. Individual tests override only the fields they care about
@@ -62,3 +115,16 @@ def make_service_ticket_kwargs(**overrides):
     }
     defaults.update(overrides)
     return defaults
+
+
+def make_mechanic_payload(**overrides):
+    """Default JSON body for creating/updating a mechanic in route
+    tests, following the same pattern as make_customer_payload."""
+    payload = {
+        "name": "Alex Chen",
+        "email": "alex@example.com",
+        "phone": "555-987-6543",
+        "salary": 55000.00,
+    }
+    payload.update(overrides)
+    return payload

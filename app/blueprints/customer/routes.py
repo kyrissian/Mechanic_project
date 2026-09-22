@@ -5,21 +5,34 @@ Follows standard REST conventions: the same /customers endpoint
 handles multiple operations, differentiated by HTTP method --
 GET /customers (all), GET /customers/<id> (one), POST /customers
 (create), PUT /customers/<id> (full update), DELETE /customers/<id>.
+
+Customer creation is rate limited (see create_customer). Customer reads
+are intentionally not cached: they contain personal data and change
+whenever a customer is created, updated, or deleted.
 """
 
 from flask import request, jsonify
 from marshmallow import ValidationError
 from sqlalchemy import select
 
-from app.extensions import db
+from app.extensions import db, limiter
 from app.models.customer import Customer
 from app.blueprints.customer import customer_bp
 from app.blueprints.customer.schemas import customer_schema, customers_schema
 
 
 @customer_bp.route("", methods=["POST"])
+@limiter.limit("5 per hour")
 def create_customer():
-    """Create a new customer from the JSON request body."""
+    """Create a new customer from the JSON request body.
+
+    Rate limited to 5 requests per hour per client IP. Creation is the
+    write path most open to abuse: without a limit, a script could flood
+    the database with junk customer records or probe for which emails
+    are already registered. Every attempt counts toward the limit,
+    including ones rejected with a 400, which is what stops that
+    kind of probing.
+    """
     try:
         customer_data = customer_schema.load(request.json)
     except ValidationError as e:

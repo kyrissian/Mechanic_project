@@ -24,6 +24,7 @@ A Flask + SQLAlchemy + MySQL backend for a mechanic shop, managing customers, me
 - [Database Setup](#database-setup)
 - [Entity-Relationship Diagram](#entity-relationship-diagram)
 - [API Endpoints](#api-endpoints)
+- [Rate Limiting & Caching](#rate-limiting--caching)
 - [Error Handling](#error-handling)
 - [Project Structure](#project-structure)
 - [Architecture Notes](#architecture-notes)
@@ -33,6 +34,13 @@ A Flask + SQLAlchemy + MySQL backend for a mechanic shop, managing customers, me
 ---
 
 ## Changelog
+
+### 2026-09-21: Rate Limiting and Caching
+
+- Added Flask-Limiter, rate limiting `POST /customers` to 5 requests per hour per client IP -- customer creation is the write path most open to abuse (junk records, or probing which emails are already registered), and rejected requests count toward the limit specifically to stop that kind of probing. Added a dedicated `429` JSON error handler in `app/error_handlers.py` so a client sees which limit it hit, not just Flask-Limiter's default plain-text response.
+- Added Flask-Caching, caching `GET /mechanics` for 60 seconds -- the mechanic roster changes rarely but is read often (e.g. whenever someone assigns a mechanic to a ticket). `create_mechanic`, `update_mechanic`, and `delete_mechanic` all explicitly clear the cache after committing, so the 60-second timeout is a backstop rather than the reason data stays fresh -- a client never sees stale data after a write through the API.
+- Config split by environment: `DevelopmentConfig` uses `SimpleCache` (in-process) and a `memory://` rate-limit store; `TestingConfig` uses `NullCache` and disables rate limiting entirely, so the existing 51 tests are unaffected. Two test-only config subclasses in `conftest.py`, `RateLimitedTestConfig` and `CachedTestConfig`, opt back into one feature at a time for the tests that need it.
+- 10 new tests added: 5 for rate limiting (`test_rate_limiting.py`) and 5 for caching and its invalidation on create/update/delete (`test_mechanic_caching.py`).
 
 ### 2026-09-16: Global Error Handling, CI, and Dependency Fix
 
@@ -72,6 +80,8 @@ A Flask + SQLAlchemy + MySQL backend for a mechanic shop, managing customers, me
 | ORM                        | Flask-SQLAlchemy (SQLAlchemy 2.0 `Mapped`/`mapped_column` style)                     |
 | Serialization / validation | Flask-Marshmallow, marshmallow-sqlalchemy                                            |
 | Database                   | MySQL (via `mysql-connector-python`)                                                 |
+| Rate limiting              | Flask-Limiter (in-memory store)                                                      |
+| Caching                    | Flask-Caching (`SimpleCache` in development, `NullCache` in tests)                   |
 | Config / secrets           | `python-dotenv` (`.env`, gitignored)                                                 |
 | Testing                    | pytest, with an isolated in-memory SQLite database                                   |
 | Manual API testing         | Postman (collection included in the repo)                                            |
@@ -182,12 +192,31 @@ Deliberately no `PUT`/`DELETE` for the ticket resource itself -- a completed or 
 
 ---
 
+## Rate Limiting & Caching
+
+| Route             | Behavior                             | Why                                                                                                                                                                                                                                                     |
+| ----------------- | ------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `POST /customers` | Rate limited: 5 requests / hour / IP | Creation is the write path most open to abuse -- an unlimited endpoint could be flooded with junk records or used to probe which emails are already registered. Rejected (400) attempts still count toward the limit, which is what stops that probing. |
+| `GET /mechanics`  | Cached: 60 seconds                   | The mechanic roster is read often (e.g. every time a mechanic is assigned to a ticket) but changes rarely, so most requests can be served from memory instead of hitting the database.                                                                  |
+
+No other routes are limited or cached: `/customers` reads return personal data that changes on every write, so they're always fresh; `/service-tickets` changes too often for a timed cache to help.
+
+A limited or cached response carries the same status codes and JSON shape described in [Error Handling](#error-handling) and [API Endpoints](#api-endpoints) above, with two additions:
+
+- Exceeding the limit on `POST /customers` returns `429` with `{"error": "Rate limit exceeded", "detail": "5 per 1 hour"}`.
+- Every response includes `X-RateLimit-Limit`, `X-RateLimit-Remaining`, and `X-RateLimit-Reset` headers, so the current state of the limit is visible in Postman without waiting to be blocked.
+
+Cache invalidation is explicit, not timeout-only: `create_mechanic`, `update_mechanic`, and `delete_mechanic` all call `cache.delete()` on the cached key immediately after committing, so a client making a write through the API always sees its own change on the very next `GET /mechanics` -- the 60-second timeout only matters for a change made outside the API (e.g. directly in MySQL Workbench).
+
+---
+
 ## Error Handling
 
 Two global error handlers (`app/error_handlers.py`) guarantee every response from this API is JSON, including failures that never reach an actual route function:
 
 - Any HTTP-level error (unmatched route → 404, wrong HTTP method → 405, malformed JSON body → 400, wrong `Content-Type` header → 415, etc.) returns `{"error": "..."}` with the matching status code, instead of Flask's default HTML error page.
 - Any unexpected exception in application code is caught and logged server-side, and returns a generic `{"error": "An unexpected server error occurred."}` with a 500, rather than leaking a raw traceback to the client.
+- Exceeding a rate limit returns `429` with `{"error": "Rate limit exceeded", "detail": "..."}`, where `detail` names the specific limit that was hit (e.g. `"5 per 1 hour"`). Flask checks status-code handlers before class handlers, so this one takes priority over the generic HTTP-level handler above.
 
 This is separate from, and doesn't interfere with, the specific `{"error": "Customer not found."}`-style responses already written into each route for expected cases like a missing id or a duplicate email -- those are returned directly by the view functions and never touch these handlers at all.
 
@@ -209,7 +238,7 @@ Mechanic_project/
       ci.yml                   # runs pytest + pylint on push/PR
   app/
     __init__.py                # app factory (create_app())
-    extensions.py               # shared db = SQLAlchemy() / ma = Marshmallow() instances
+    extensions.py               # shared db / ma / limiter / cache instances
     error_handlers.py           # global JSON error handlers
     models/
       __init__.py
@@ -240,6 +269,8 @@ Mechanic_project/
     test_customer_routes.py
     test_mechanic_routes.py
     test_service_ticket_routes.py
+    test_rate_limiting.py
+    test_mechanic_caching.py
     test_error_handlers.py
 ```
 
@@ -265,9 +296,10 @@ Each blueprint is registered in `app/__init__.py` with a `url_prefix` matching t
 
 ### Provider-style separation
 
-- `app/extensions.py` holds the shared `db` and `ma` objects. It's kept separate from `app/__init__.py` specifically to avoid a circular import: model/schema files need to import `db`/`ma` to define their columns/fields, and the app factory needs to import the models to register their tables.
+- `app/extensions.py` holds the shared `db`, `ma`, `limiter`, and `cache` objects. It's kept separate from `app/__init__.py` specifically to avoid a circular import: model/schema files need to import `db`/`ma` to define their columns/fields, and the app factory needs to import the models to register their tables.
 - Model files import `service_mechanics.py`'s `service_mechanics` table by string name (`secondary="service_mechanics"`) rather than importing the `Table` object directly, avoiding another circular-import path between `mechanic.py` and `service_ticket.py`.
 - `ServiceTicketSchema` sets `include_fk = True` in its `Meta` class specifically because `SQLAlchemyAutoSchema` excludes foreign key columns by default -- without it, `customer_id` (the field a client needs to send when creating a ticket) would be silently missing from the schema entirely.
+- `cache = Cache()` in `extensions.py` is deliberately created with no config, unlike the lesson's example. Config passed directly to the `Cache()` constructor overrides `app.config`, which would make it impossible for `TestingConfig` to switch caching off -- so the backend (`SimpleCache`, `NullCache`) is set entirely through `config.py` instead.
 
 ---
 
@@ -280,6 +312,8 @@ Each model has its own test file, written alongside the model as it was built, p
 - **`test_customer_model.py`** / **`test_customer_routes.py`** — model-level creation and unique-email enforcement; every `/customers` endpoint including duplicate-email and missing-field rejection, and 404s for bad ids.
 - **`test_mechanic_model.py`** / **`test_mechanic_routes.py`** — model-level creation and the many-to-many relationship to tickets; every `/mechanics` endpoint including the extra-credit get-one route.
 - **`test_service_ticket_model.py`** / **`test_service_ticket_routes.py`** — model-level creation and the many-to-many relationship to mechanics; every `/service-tickets` endpoint including assign/remove-mechanic edge cases (duplicate assignment, removing an unassigned mechanic, ticket/mechanic not found).
+- **`test_rate_limiting.py`** — confirms `POST /customers` allows 5 requests per hour then returns 429; that rejected requests still count toward the limit; that the limit doesn't block other routes; that rate-limit headers are present; and that the default test config leaves rate limiting off.
+- **`test_mechanic_caching.py`** — confirms `GET /mechanics` is served from cache (a direct database insert the API never saw stays invisible until the cache clears); that caching is off by default in tests; and that create, update, and delete on `/mechanics` each immediately refresh the cached list.
 - **`test_error_handlers.py`** — confirms unmatched routes, wrong HTTP methods, malformed JSON, and wrong `Content-Type` all return consistent JSON rather than Flask's default HTML error pages.
 
 Tests run against a temporary in-memory SQLite database (via `TestingConfig`), never the real MySQL database — so the suite is fast and never at risk of touching or corrupting real data.
@@ -290,7 +324,7 @@ Run the full suite:
 python -m pytest -v
 ```
 
-Currently: **47 tests, all passing.**
+Currently: **61 tests, all passing.**
 
 ### Testing with Postman
 
@@ -320,7 +354,8 @@ This wasn't required by the assignment -- it's carried over from CI/CD coursewor
 - [x] Blueprints registered for `customer`, `mechanic`, and `service_ticket`, each with its own `url_prefix`
 - [x] Full CRUD implemented for `Customer` and `Mechanic`; `ServiceTicket` create/list/assign-mechanic/remove-mechanic (no update/delete, by design)
 - [x] Marshmallow schemas validate and serialize every resource
+- [x] `POST /customers` rate limited (5/hour/IP); `GET /mechanics` cached (60s) with explicit invalidation on write
 - [x] Postman collection included in the repo and covers every endpoint
-- [x] 47 automated tests passing (`python -m pytest -v`)
+- [x] 61 automated tests passing (`python -m pytest -v`)
 - [x] Pylint clean (`python -m pylint app tests config.py`)
 - [x] CI workflow passing on GitHub Actions

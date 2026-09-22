@@ -7,16 +7,25 @@ these routes only need their path relative to that -- "" here means
 "/mechanics/<id>". Per the assignment, only Create, Read-all, Update,
 and Delete are required -- the single-mechanic GET below is extra
 credit, added for parity with the Customer resource.
+
+The read-all route is cached (see get_mechanics). Every route that
+changes the mechanic roster clears that cache after committing, so
+clients never see a stale list.
 """
 
 from flask import request, jsonify
 from marshmallow import ValidationError
 from sqlalchemy import select
 
-from app.extensions import db
+from app.extensions import cache, db
 from app.models.mechanic import Mechanic
 from app.blueprints.mechanic import mechanic_bp
 from app.blueprints.mechanic.schemas import mechanic_schema, mechanics_schema
+
+# Single source of truth for the cache key, shared by the @cache.cached
+# decorator and every cache.delete() call below. If the two ever drifted
+# apart, invalidation would silently stop working.
+MECHANICS_CACHE_KEY = "all_mechanics"
 
 
 @mechanic_bp.route("", methods=["POST"])
@@ -35,12 +44,22 @@ def create_mechanic():
     new_mechanic = Mechanic(**mechanic_data)
     db.session.add(new_mechanic)
     db.session.commit()
+    cache.delete(MECHANICS_CACHE_KEY)  # roster changed; drop the cached list
     return mechanic_schema.jsonify(new_mechanic), 201
 
 
 @mechanic_bp.route("", methods=["GET"])
+@cache.cached(timeout=60, key_prefix=MECHANICS_CACHE_KEY)
 def get_mechanics():
-    """Retrieve every mechanic."""
+    """Retrieve every mechanic.
+
+    Cached for 60 seconds. The mechanic roster changes rarely but is
+    read often (e.g. whenever someone picks a mechanic to assign to a
+    ticket), so most requests can be answered from memory instead of
+    querying the database. The create, update, and delete routes clear
+    this cache after every change, so the 60-second timeout is only a
+    backstop rather than the reason data stays fresh.
+    """
     query = select(Mechanic)
     mechanics = db.session.execute(query).scalars().all()
     return mechanics_schema.jsonify(mechanics)
@@ -82,6 +101,7 @@ def update_mechanic(mechanic_id):
         setattr(mechanic, key, value)
 
     db.session.commit()
+    cache.delete(MECHANICS_CACHE_KEY)  # a cached entry now holds old values
     return mechanic_schema.jsonify(mechanic), 200
 
 
@@ -94,6 +114,7 @@ def delete_mechanic(mechanic_id):
 
     db.session.delete(mechanic)
     db.session.commit()
+    cache.delete(MECHANICS_CACHE_KEY)  # deleted mechanic must vanish from the list
     return (
         jsonify({"message": f"Mechanic id: {mechanic_id}, successfully deleted."}),
         200,

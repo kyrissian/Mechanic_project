@@ -1,17 +1,6 @@
 """Tests for the Mechanic CRUD routes."""
 
-
-def make_mechanic_payload(**overrides):
-    """Default JSON body for creating/updating a mechanic in route
-    tests, following the same pattern as make_customer_payload."""
-    payload = {
-        "name": "Alex Chen",
-        "email": "alex@example.com",
-        "phone": "555-987-6543",
-        "salary": 55000.00,
-    }
-    payload.update(overrides)
-    return payload
+from tests.conftest import make_mechanic_payload
 
 
 def test_create_mechanic(client):

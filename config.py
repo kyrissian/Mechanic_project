@@ -9,7 +9,9 @@ Two configs are defined:
   This keeps the test suite fast, isolated from the real database, and
   runnable without a MySQL server available at all (useful for CI,
   where spinning up MySQL is extra setup we don't need for model-level
-  tests).
+  tests). It also switches off rate limiting and caching so existing
+  tests never hit a limit or read stale cached data; the tests that
+  cover those features opt back in with their own subclasses.
 """
 
 import os
@@ -24,6 +26,20 @@ class Config:
     """Shared base config. Subclasses override what differs."""
 
     SQLALCHEMY_TRACK_MODIFICATIONS = False
+
+    # Flask-Caching: in-process memory cache. Simple and dependency-free,
+    # but each process has its own cache and it empties on restart; a
+    # multi-server production deployment would use Redis instead.
+    CACHE_TYPE = "SimpleCache"
+    CACHE_DEFAULT_TIMEOUT = 60  # seconds, used when a route sets no timeout
+
+    # Flask-Limiter: keep request counters in memory (also per-process,
+    # also reset on restart). Setting this explicitly silences the
+    # "in-memory storage" warning Flask-Limiter prints otherwise.
+    RATELIMIT_STORAGE_URI = "memory://"
+    # Adds X-RateLimit-Limit / -Remaining / -Reset headers to responses,
+    # which makes rate limiting easy to see in Postman's Headers tab.
+    RATELIMIT_HEADERS_ENABLED = True
 
 
 class DevelopmentConfig(Config):
@@ -44,3 +60,13 @@ class TestingConfig(Config):
 
     TESTING = True
     SQLALCHEMY_DATABASE_URI = "sqlite:///:memory:"
+
+    # NullCache stores nothing, so every request hits the database and
+    # tests never see stale cached data.
+    CACHE_TYPE = "NullCache"
+    # NullCache is deliberate here, so silence Flask-Caching's warning
+    # about it (otherwise it prints once per test-app creation).
+    CACHE_NO_NULL_WARNING = True
+    # Without this, the suite's many POSTs from one test-client IP would
+    # trip the customer-creation limit partway through.
+    RATELIMIT_ENABLED = False

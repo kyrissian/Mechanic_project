@@ -4,13 +4,17 @@ Global error handlers.
 Without these, an unmatched route, a wrong HTTP method, or a
 malformed/missing JSON body all fall through to Flask's default
 error pages -- plain HTML, not JSON -- which is inconsistent for a
-REST API that returns JSON everywhere else. These two handlers cover
+REST API that returns JSON everywhere else. These three handlers cover
 every case:
 
 - HTTPException covers all the "expected" HTTP errors (404 unmatched
   route, 405 wrong method, 400 malformed JSON body, 415 wrong
   Content-Type, etc.) with one handler instead of registering one per
   status code.
+- The 429 handler covers rate-limit violations raised by Flask-Limiter.
+  Flask checks status-code handlers before class handlers, so this one
+  takes priority over the generic HTTPException handler and lets us
+  return a clearer message that includes the limit that was exceeded.
 - The bare Exception handler is a last-resort safety net for any bug
   in our own code that would otherwise leak a raw traceback (or, in
   production, a bare "Internal Server Error" HTML page) to the client.
@@ -41,3 +45,12 @@ def register_error_handlers(app):
         never surfaces a raw traceback or an HTML 500 page."""
         app.logger.exception("Unhandled exception: %s", e)
         return jsonify({"error": "An unexpected server error occurred."}), 500
+
+    @app.errorhandler(429)
+    def handle_rate_limit_exceeded(e):
+        """Return a JSON 429 when a client exceeds a rate limit.
+
+        `e.description` holds the limit that was hit (e.g. "5 per 1 hour"),
+        which tells the client what the rule is.
+        """
+        return jsonify({"error": "Rate limit exceeded", "detail": str(e.description)}), 429

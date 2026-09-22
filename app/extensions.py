@@ -6,10 +6,18 @@ avoid a circular import: model/schema files need to import `db`/`ma`
 to define their columns/fields, and the app factory needs to import
 the models to register them -- if these lived in app/__init__.py,
 those imports would depend on each other.
+
+This module also holds the rate limiter and cache instances. Like `db`
+and `ma`, they are created here without an app and bound to it later by
+`init_app()` inside the factory, so routes can import them without
+importing the app itself.
 """
 
 import sqlite3
 
+from flask_caching import Cache
+from flask_limiter import Limiter
+from flask_limiter.util import get_remote_address
 from flask_sqlalchemy import SQLAlchemy
 from flask_marshmallow import Marshmallow
 from sqlalchemy import event
@@ -17,6 +25,16 @@ from sqlalchemy.engine import Engine
 
 db = SQLAlchemy()
 ma = Marshmallow()
+
+# Rate limiter: identifies each client by IP address so limits apply per
+# client. Limits themselves are set per route with @limiter.limit(...).
+limiter = Limiter(key_func=get_remote_address)
+
+# Cache: intentionally created with no config. The backend (SimpleCache in
+# development, NullCache in tests) comes from config.py, because config
+# passed to the Cache() constructor would override app.config and make it
+# impossible to turn caching off for tests.
+cache = Cache()
 
 
 @event.listens_for(Engine, "connect")

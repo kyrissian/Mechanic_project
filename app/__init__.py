@@ -9,7 +9,7 @@ MySQL database or interfering with a separately-running dev server.
 """
 
 from flask import Flask
-from app.extensions import db, ma
+from app.extensions import cache, db, limiter, ma
 from config import DevelopmentConfig
 
 
@@ -18,13 +18,17 @@ def create_app(config_class=DevelopmentConfig):
 
     config_class controls which database the app connects to --
     DevelopmentConfig (the real MySQL database) by default, or
-    TestingConfig (in-memory SQLite) when called from tests.
+    TestingConfig (in-memory SQLite) when called from tests. It also
+    controls whether rate limiting and caching are active, since
+    TestingConfig turns both off.
     """
     app = Flask(__name__)
     app.config.from_object(config_class)
 
     db.init_app(app)
     ma.init_app(app)
+    limiter.init_app(app)
+    cache.init_app(app)
 
     # Deferred import: avoids a circular dependency, since
     # error_handlers.py doesn't need anything from this module.

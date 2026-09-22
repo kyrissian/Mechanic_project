@@ -6,3 +6,5 @@ mysql-connector-python
 python-dotenv
 pytest
 pylint
+Flask-Limiter
+Flask-Caching
