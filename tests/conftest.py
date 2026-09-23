@@ -117,6 +117,23 @@ def make_service_ticket_kwargs(**overrides):
     return defaults
 
 
+def make_customer_kwargs(**overrides):
+    """Default field values for constructing a Customer directly in
+    model-level tests (as opposed to make_customer_payload, which
+    builds a POST/PUT request body). password_hash uses a placeholder
+    string rather than a real hash -- these tests only need the
+    NOT NULL constraint satisfied, never a working login.
+    """
+    defaults = {
+        "name": "Jamie Rivera",
+        "email": "jamie@example.com",
+        "phone": "555-123-4567",
+        "password_hash": "fakehash123",
+    }
+    defaults.update(overrides)
+    return defaults
+
+
 def make_mechanic_payload(**overrides):
     """Default JSON body for creating/updating a mechanic in route
     tests, following the same pattern as make_customer_payload."""
@@ -128,3 +145,46 @@ def make_mechanic_payload(**overrides):
     }
     payload.update(overrides)
     return payload
+
+
+def make_customer_payload(index=None, **overrides):
+    """Default JSON body for creating/updating a customer in route
+    tests. Pass `index` to get a unique name/email -- used by the
+    rate-limiting tests, which create several customers in a row and
+    would otherwise trip the duplicate-email check on the second one.
+    """
+    if index is None:
+        name = "Jamie Rivera"
+        email = "jamie@example.com"
+    else:
+        name = f"Customer {index}"
+        email = f"customer{index}@example.com"
+
+    payload = {
+        "name": name,
+        "email": email,
+        "phone": "555-123-4567",
+        "password": "hunter2",
+    }
+    payload.update(overrides)
+    return payload
+
+
+def login_customer(client, **overrides):  # pylint: disable=redefined-outer-name
+    """Create a customer via the API, log them in, and return
+    (customer_id, auth_headers) -- the auth_headers dict is ready to
+    pass straight to client.get/put/delete(..., headers=auth_headers)
+    for any test that needs a valid token.
+
+    `client` here is a parameter, not the `client` fixture above --
+    every test that calls this passes its own `client` fixture in
+    explicitly, since fixtures can't be requested by a plain function.
+    """
+    payload = make_customer_payload(**overrides)
+    created = client.post("/customers", json=payload).json
+    login_response = client.post(
+        "/customers/login",
+        json={"email": payload["email"], "password": payload["password"]},
+    )
+    token = login_response.json["auth_token"]
+    return created["id"], {"Authorization": f"Bearer {token}"}

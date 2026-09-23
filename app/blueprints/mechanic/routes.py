@@ -27,6 +27,7 @@ from app.extensions import cache, db, limiter
 from app.models.mechanic import Mechanic
 from app.blueprints.mechanic import mechanic_bp
 from app.blueprints.mechanic.schemas import mechanic_schema, mechanics_schema
+from app.utils.errors import validation_error_response
 
 # Single source of truth for the list-cache key, shared by the
 # @cache.cached decorator and every cache.delete() call below. If the
@@ -52,7 +53,7 @@ def create_mechanic():
     try:
         mechanic_data = mechanic_schema.load(request.json)
     except ValidationError as e:
-        return jsonify(e.messages), 400
+        return validation_error_response(e)
 
     query = select(Mechanic).where(Mechanic.email == mechanic_data["email"])
     existing_mechanic = db.session.execute(query).scalars().first()
@@ -120,7 +121,7 @@ def update_mechanic(mechanic_id):
     try:
         mechanic_data = mechanic_schema.load(request.json)
     except ValidationError as e:
-        return jsonify(e.messages), 400
+        return validation_error_response(e)
 
     # Same duplicate-email check as create_mechanic, but excluding
     # this mechanic's own row.

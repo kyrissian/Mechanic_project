@@ -27,6 +27,11 @@ class Config:
 
     SQLALCHEMY_TRACK_MODIFICATIONS = False
 
+    # Signs and verifies JWTs (see app/utils/util.py). Sourced from
+    # .env, same as the database credentials, so the real key is
+    # never committed to source control.
+    SECRET_KEY = os.getenv("SECRET_KEY")
+
     # Flask-Caching: in-process memory cache. Simple and dependency-free,
     # but each process has its own cache and it empties on restart; a
     # multi-server production deployment would use Redis instead.
@@ -60,6 +65,10 @@ class TestingConfig(Config):
 
     TESTING = True
     SQLALCHEMY_DATABASE_URI = "sqlite:///:memory:"
+
+    # Fixed rather than inherited from .env -- tests must never depend
+    # on a real secret existing, especially in CI, which has no .env.
+    SECRET_KEY = "testing-secret-key"
 
     # NullCache stores nothing, so every request hits the database and
     # tests never see stale cached data.

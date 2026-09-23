@@ -21,6 +21,7 @@ from app.blueprints.service_ticket.schemas import (
     service_ticket_schema,
     service_tickets_schema,
 )
+from app.utils.errors import validation_error_response
 
 
 @service_ticket_bp.route("", methods=["POST"])
@@ -29,7 +30,7 @@ def create_service_ticket():
     try:
         ticket_data = service_ticket_schema.load(request.json)
     except ValidationError as e:
-        return jsonify(e.messages), 400
+        return validation_error_response(e)
 
     # Explicit check rather than relying on the database's own foreign
     # key enforcement: MySQL (production) would reject an invalid

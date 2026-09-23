@@ -35,7 +35,7 @@ def test_create_mechanic_rejects_missing_field(client):
     response = client.post("/mechanics", json=incomplete_payload)
 
     assert response.status_code == 400
-    assert "salary" in response.json
+    assert "salary" in response.json["details"]
 
 
 def test_get_mechanics(client):

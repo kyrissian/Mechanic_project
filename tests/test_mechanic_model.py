@@ -4,7 +4,7 @@ relationship with ServiceTicket."""
 from app.models.customer import Customer
 from app.models.mechanic import Mechanic
 from app.models.service_ticket import ServiceTicket
-from tests.conftest import make_service_ticket_kwargs
+from tests.conftest import make_customer_kwargs, make_service_ticket_kwargs
 
 
 def test_create_mechanic(db):
@@ -32,9 +32,7 @@ def test_mechanic_can_be_assigned_to_multiple_tickets(db):
     """A single mechanic should be able to work on more than one
     service ticket -- this is the many-to-many relationship the ERD's
     service_mechanics junction table exists to support."""
-    customer = Customer(
-        name="Jamie Rivera", email="jamie@example.com", phone="555-123-4567"
-    )
+    customer = Customer(**make_customer_kwargs())
     mechanic = Mechanic(
         name="Alex Chen", email="alex@example.com", phone="555-987-6543", salary=55000.00
     )

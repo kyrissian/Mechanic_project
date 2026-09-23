@@ -1,19 +1,7 @@
 """Tests for rate limiting: route-specific limits on customer/mechanic
 create and delete, plus the global default applied to every route."""
 
-from tests.conftest import make_mechanic_payload
-
-
-def make_customer_payload(index=0, **overrides):
-    """Default JSON body for creating a customer. `index` makes each
-    email unique so repeated creates don't trip the duplicate-email check."""
-    payload = {
-        "name": f"Customer {index}",
-        "email": f"customer{index}@example.com",
-        "phone": "555-123-4567",
-    }
-    payload.update(overrides)
-    return payload
+from tests.conftest import make_customer_payload, make_mechanic_payload
 
 
 def test_create_customer_blocked_after_five_requests(rate_limited_client):
@@ -90,14 +78,13 @@ def test_create_mechanic_blocked_after_five_requests(rate_limited_client):
 
 
 def test_delete_customer_blocked_after_ten_requests(rate_limited_client):
-    """The 11th DELETE /customers/<id> within an hour returns 429.
-    Deletion counts toward the limit regardless of outcome, so hammering
-    a nonexistent id (404 each time) still trips it -- deletion is
-    destructive, so the limit guards against a runaway loop wiping
-    records, not just against successful deletes."""
+    """The 11th DELETE /customers/<id> within an hour returns 429,
+    even with no token supplied. The limiter runs before token_required
+    (see the decorator order in delete_customer), so every attempt
+    counts toward the limit regardless of the 401 each one returns."""
     for _ in range(10):
         response = rate_limited_client.delete("/customers/999")
-        assert response.status_code == 404
+        assert response.status_code == 401
 
     response = rate_limited_client.delete("/customers/999")
 
@@ -105,7 +92,9 @@ def test_delete_customer_blocked_after_ten_requests(rate_limited_client):
 
 
 def test_delete_mechanic_blocked_after_ten_requests(rate_limited_client):
-    """Same guarantee as the customer delete limit, for mechanics."""
+    """Same guarantee as the customer delete limit, for mechanics.
+    Mechanic routes carry no token requirement, so these attempts
+    reach the actual 404 check rather than being blocked by auth."""
     for _ in range(10):
         response = rate_limited_client.delete("/mechanics/999")
         assert response.status_code == 404

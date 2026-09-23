@@ -1,13 +1,12 @@
 """Tests for the ServiceTicket routes, including mechanic assignment."""
 
+from tests.conftest import make_customer_payload
+
 
 def create_test_customer(client):
     """Helper: create a customer and return its id, since every
     service ticket needs a real customer_id to attach to."""
-    response = client.post(
-        "/customers",
-        json={"name": "Jamie Rivera", "email": "jamie@example.com", "phone": "555-123-4567"},
-    )
+    response = client.post("/customers", json=make_customer_payload())
     return response.json["id"]
 
 
@@ -59,7 +58,7 @@ def test_create_service_ticket_rejects_missing_field(client):
     response = client.post("/service-tickets", json=incomplete_payload)
 
     assert response.status_code == 400
-    assert "vin" in response.json
+    assert "vin" in response.json["details"]
 
 
 def test_create_service_ticket_rejects_invalid_customer_id(client):
@@ -83,7 +82,7 @@ def test_create_service_ticket_rejects_short_vin(client):
     )
 
     assert response.status_code == 400
-    assert "vin" in response.json
+    assert "vin" in response.json["details"]
 
 
 def test_create_service_ticket_rejects_long_vin(client):
@@ -97,7 +96,7 @@ def test_create_service_ticket_rejects_long_vin(client):
     )
 
     assert response.status_code == 400
-    assert "vin" in response.json
+    assert "vin" in response.json["details"]
 
 
 def test_create_service_ticket_rejects_lowercase_vin(client):
@@ -111,7 +110,7 @@ def test_create_service_ticket_rejects_lowercase_vin(client):
     )
 
     assert response.status_code == 400
-    assert "vin" in response.json
+    assert "vin" in response.json["details"]
 
 
 def test_create_service_ticket_rejects_excluded_letters(client):
@@ -127,7 +126,7 @@ def test_create_service_ticket_rejects_excluded_letters(client):
         )
 
         assert response.status_code == 400
-        assert "vin" in response.json
+        assert "vin" in response.json["details"]
 
 
 def test_get_service_tickets(client):
