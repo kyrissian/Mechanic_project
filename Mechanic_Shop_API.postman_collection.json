@@ -13,7 +13,7 @@
         "header": [],
         "body": {
           "mode": "raw",
-          "raw": "{\r\n  \"name\": \"Jamie Rivera\",\r\n  \"email\": \"jamie@example.com\",\r\n  \"phone\": \"555-123-4567\"\r\n}",
+          "raw": "{\r\n  \"name\": \"Jamie Riv\",\r\n  \"email\": \"jamie@example.com\",\r\n  \"phone\": \"555-123-4567\"\r\n}",
           "options": {
             "raw": {
               "language": "json"
@@ -83,13 +83,18 @@
       "response": []
     },
     {
-      "name": "Update Customer",
+      "name": "Update Customer - authenticated",
       "request": {
         "method": "PUT",
-        "header": [],
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "Bearer {{auth_token}}"
+          }
+        ],
         "body": {
           "mode": "raw",
-          "raw": "{\r\n  \"name\": \"Jamie R. Updated\",\r\n  \"email\": \"jamie@example.com\",\r\n  \"phone\": \"555-123-4567\"\r\n}",
+          "raw": "   {\r\n       \"name\": \"Saint Rita\",\r\n       \"email\": \"StRita@example.com\",\r\n       \"phone\": \"333-143-6013\",\r\n       \"password\": \"passwordchange\"\r\n   }",
           "options": {
             "raw": {
               "language": "json"
@@ -97,7 +102,7 @@
           }
         },
         "url": {
-          "raw": "http://127.0.0.1:5000/customers/1",
+          "raw": "http://127.0.0.1:5000/customers/2",
           "protocol": "http",
           "host": [
             "127",
@@ -108,19 +113,33 @@
           "port": "5000",
           "path": [
             "customers",
-            "1"
+            "2"
           ]
         }
       },
       "response": []
     },
     {
-      "name": "Delete Customer",
+      "name": "Update Customer - authenticated - wrong owner",
       "request": {
-        "method": "DELETE",
-        "header": [],
+        "method": "PUT",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "Bearer {{auth_token}}"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "   {\r\n       \"name\": \"Saint Rita\",\r\n       \"email\": \"StRita@example.com\",\r\n       \"phone\": \"333-143-6013\",\r\n       \"password\": \"passwordchange\"\r\n   }",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
         "url": {
-          "raw": "http://127.0.0.1:5000/customers/1",
+          "raw": "http://127.0.0.1:5000/customers/3",
           "protocol": "http",
           "host": [
             "127",
@@ -131,7 +150,63 @@
           "port": "5000",
           "path": [
             "customers",
+            "3"
+          ]
+        }
+      },
+      "response": []
+    },
+    {
+      "name": "Delete Logged In Customer",
+      "request": {
+        "method": "DELETE",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "Bearer {{auth_token}}"
+          }
+        ],
+        "url": {
+          "raw": "http://127.0.0.1:5000/customers/2",
+          "protocol": "http",
+          "host": [
+            "127",
+            "0",
+            "0",
             "1"
+          ],
+          "port": "5000",
+          "path": [
+            "customers",
+            "2"
+          ]
+        }
+      },
+      "response": []
+    },
+    {
+      "name": "Delete Logged In Customer - wrong owner",
+      "request": {
+        "method": "DELETE",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "Bearer {{auth_token}}"
+          }
+        ],
+        "url": {
+          "raw": "http://127.0.0.1:5000/customers/3",
+          "protocol": "http",
+          "host": [
+            "127",
+            "0",
+            "0",
+            "1"
+          ],
+          "port": "5000",
+          "path": [
+            "customers",
+            "3"
           ]
         }
       },
@@ -393,6 +468,122 @@
         }
       },
       "response": []
+    },
+    {
+      "name": "Customer Login",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "   const response = pm.response.json();\r\n   pm.collectionVariables.set(\"auth_token\", response.auth_token);"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [],
+        "body": {
+          "mode": "raw",
+          "raw": "  {\r\n      \"email\": \"Delete@example.com\",\r\n      \"password\": \"passworddelete\"\r\n  }",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": {
+          "raw": "http://127.0.0.1:5000/customers/login",
+          "protocol": "http",
+          "host": [
+            "127",
+            "0",
+            "0",
+            "1"
+          ],
+          "port": "5000",
+          "path": [
+            "customers",
+            "login"
+          ]
+        }
+      },
+      "response": []
+    },
+    {
+      "name": "Get My Tickets",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "Bearer {{auth_token}}"
+          }
+        ],
+        "url": {
+          "raw": "http://127.0.0.1:5000/customers/my-tickets",
+          "protocol": "http",
+          "host": [
+            "127",
+            "0",
+            "0",
+            "1"
+          ],
+          "port": "5000",
+          "path": [
+            "customers",
+            "my-tickets"
+          ]
+        }
+      },
+      "response": []
+    },
+    {
+      "name": "Get My Tickets - invalid token",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "Bearer not-a-real-token"
+          }
+        ],
+        "url": {
+          "raw": "http://127.0.0.1:5000/customers/my-tickets",
+          "protocol": "http",
+          "host": [
+            "127",
+            "0",
+            "0",
+            "1"
+          ],
+          "port": "5000",
+          "path": [
+            "customers",
+            "my-tickets"
+          ]
+        }
+      },
+      "response": []
+    },
+    {
+      "name": "Get My Tickets - no token",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": ""
+        }
+      },
+      "response": []
+    }
+  ],
+  "variable": [
+    {
+      "key": "auth_token",
+      "value": ""
     }
   ]
 }
