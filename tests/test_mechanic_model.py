@@ -1,21 +1,22 @@
 """Tests for the Mechanic model, including its many-to-many
 relationship with ServiceTicket."""
 
+from decimal import Decimal
+
 from app.models.customer import Customer
 from app.models.mechanic import Mechanic
 from app.models.service_ticket import ServiceTicket
-from tests.conftest import make_customer_kwargs, make_service_ticket_kwargs
+from tests.conftest import (
+    make_customer_kwargs,
+    make_mechanic_kwargs,
+    make_service_ticket_kwargs,
+)
 
 
 def test_create_mechanic(db):
     """A Mechanic with all fields set should save and be retrievable
     with those exact values intact."""
-    mechanic = Mechanic(
-        name="Alex Chen",
-        email="alex@example.com",
-        phone="555-987-6543",
-        salary=55000.00,
-    )
+    mechanic = Mechanic(**make_mechanic_kwargs())
     db.session.add(mechanic)
     db.session.commit()
 
@@ -25,7 +26,8 @@ def test_create_mechanic(db):
     assert saved.name == "Alex Chen"
     assert saved.email == "alex@example.com"
     assert saved.phone == "555-987-6543"
-    assert saved.salary == 55000.00
+    assert saved.salary == Decimal("55000.00")
+    assert saved.role == "mechanic"
 
 
 def test_mechanic_can_be_assigned_to_multiple_tickets(db):
@@ -33,9 +35,7 @@ def test_mechanic_can_be_assigned_to_multiple_tickets(db):
     service ticket -- this is the many-to-many relationship the ERD's
     service_mechanics junction table exists to support."""
     customer = Customer(**make_customer_kwargs())
-    mechanic = Mechanic(
-        name="Alex Chen", email="alex@example.com", phone="555-987-6543", salary=55000.00
-    )
+    mechanic = Mechanic(**make_mechanic_kwargs())
 
     ticket_one = ServiceTicket(customer=customer, **make_service_ticket_kwargs())
     ticket_two = ServiceTicket(

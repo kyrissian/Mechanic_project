@@ -9,3 +9,4 @@ pylint
 Flask-Limiter
 Flask-Caching
 python-jose
+Faker

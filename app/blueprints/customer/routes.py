@@ -96,10 +96,43 @@ def login():
 
 @customer_bp.route("", methods=["GET"])
 def get_customers():
-    """Retrieve every customer."""
+    """Retrieve customers, paginated.
+
+    ?page (default 1) and ?page_size (default 7, capped at 50) control
+    which slice is returned. Invalid or missing values fall back to
+    the defaults rather than erroring -- a malformed query param
+    shouldn't break an otherwise valid request. A page past the last
+    real page returns an empty customers list rather than a 404;
+    there's nothing wrong with the request, there's just no data
+    there.
+    """
+    try:
+        page = int(request.args.get("page", 1))
+    except ValueError:
+        page = 1
+    page = max(page, 1)
+
+    try:
+        page_size = int(request.args.get("page_size", 7))
+    except ValueError:
+        page_size = 7
+    page_size = max(1, min(page_size, 50))
+
     query = select(Customer)
-    customers = db.session.execute(query).scalars().all()
-    return customers_schema.jsonify(customers)
+    total = db.session.execute(
+        select(db.func.count()).select_from(query.subquery())
+    ).scalar()
+
+    paginated_query = query.offset((page - 1) * page_size).limit(page_size)
+    customers = db.session.execute(paginated_query).scalars().all()
+
+    return jsonify({
+        "customers": customers_schema.dump(customers),
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+        "total_pages": (total + page_size - 1) // page_size if total else 0,
+    }), 200
 
 
 @customer_bp.route("/<int:customer_id>", methods=["GET"])

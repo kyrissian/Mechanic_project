@@ -1,7 +1,7 @@
 """Tests for customer login and token-protected routes."""
 
 from app.models.service_ticket import ServiceTicket
-from tests.conftest import login_customer, make_customer_payload
+from tests.conftest import login_customer, make_customer_payload, make_service_ticket_kwargs
 
 
 def test_login_returns_token_for_valid_credentials(client):
@@ -113,16 +113,14 @@ def test_my_tickets_returns_only_own_tickets(client, db):
     other_id, _ = login_customer(client, name="Other", email="other@example.com")
 
     db.session.add(ServiceTicket(
-        vin="1HGCM82633A004352",
-        service_date="2026-01-05",
-        service_desc="Oil change",
         customer_id=customer_id,
+        **make_service_ticket_kwargs(service_desc="Oil change"),
     ))
     db.session.add(ServiceTicket(
-        vin="1HGCM82633A004353",
-        service_date="2026-01-06",
-        service_desc="Tire rotation",
         customer_id=other_id,
+        **make_service_ticket_kwargs(
+            vin="2T1BURHE0JC014678", service_desc="Tire rotation"
+        ),
     ))
     db.session.commit()
 

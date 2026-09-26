@@ -1,7 +1,8 @@
 """Tests for rate limiting: route-specific limits on customer/mechanic
 create and delete, plus the global default applied to every route."""
 
-from tests.conftest import make_customer_payload, make_mechanic_payload
+from app.extensions import db as _db
+from tests.conftest import make_customer_payload, make_mechanic_payload, seed_manager
 
 
 def test_create_customer_blocked_after_five_requests(rate_limited_client):
@@ -35,7 +36,15 @@ def test_limit_only_applies_to_customer_creation(rate_limited_client):
     for i in range(6):
         rate_limited_client.post("/customers", json=make_customer_payload(i))
 
-    mechanic_response = rate_limited_client.post("/mechanics", json=make_mechanic_payload())
+    manager_obj, password = seed_manager(_db)
+    login_response = rate_limited_client.post(
+        "/mechanics/login", json={"email": manager_obj.email, "password": password}
+    )
+    manager_headers = {"Authorization": f"Bearer {login_response.json['auth_token']}"}
+
+    mechanic_response = rate_limited_client.post(
+        "/mechanics", json=make_mechanic_payload(), headers=manager_headers
+    )
     customers_response = rate_limited_client.get("/customers")
 
     assert mechanic_response.status_code == 201
@@ -62,16 +71,26 @@ def test_rate_limiting_is_disabled_in_default_test_config(client):
 
 def test_create_mechanic_blocked_after_five_requests(rate_limited_client):
     """POST /mechanics carries the same 5-per-hour limit as customer
-    creation, for the same reason: creation is the write path most
-    open to abuse."""
+    creation. A manager is bootstrapped directly (that insert doesn't
+    touch the API, so it never counts toward the limit)."""
+    manager_obj, password = seed_manager(_db)
+    login_response = rate_limited_client.post(
+        "/mechanics/login", json={"email": manager_obj.email, "password": password}
+    )
+    manager_headers = {"Authorization": f"Bearer {login_response.json['auth_token']}"}
+
     for i in range(5):
         response = rate_limited_client.post(
-            "/mechanics", json=make_mechanic_payload(email=f"mech{i}@example.com")
+            "/mechanics",
+            json=make_mechanic_payload(email=f"mech{i}@example.com"),
+            headers=manager_headers,
         )
         assert response.status_code == 201
 
     response = rate_limited_client.post(
-        "/mechanics", json=make_mechanic_payload(email="mech5@example.com")
+        "/mechanics",
+        json=make_mechanic_payload(email="mech5@example.com"),
+        headers=manager_headers,
     )
 
     assert response.status_code == 429
@@ -79,9 +98,9 @@ def test_create_mechanic_blocked_after_five_requests(rate_limited_client):
 
 def test_delete_customer_blocked_after_ten_requests(rate_limited_client):
     """The 11th DELETE /customers/<id> within an hour returns 429,
-    even with no token supplied. The limiter runs before token_required
-    (see the decorator order in delete_customer), so every attempt
-    counts toward the limit regardless of the 401 each one returns."""
+    even with no token supplied. The limiter runs before
+    token_required, so every attempt counts regardless of the 401
+    each one returns."""
     for _ in range(10):
         response = rate_limited_client.delete("/customers/999")
         assert response.status_code == 401
@@ -93,11 +112,11 @@ def test_delete_customer_blocked_after_ten_requests(rate_limited_client):
 
 def test_delete_mechanic_blocked_after_ten_requests(rate_limited_client):
     """Same guarantee as the customer delete limit, for mechanics.
-    Mechanic routes carry no token requirement, so these attempts
-    reach the actual 404 check rather than being blocked by auth."""
+    The limiter is the outer decorator on delete_mechanic, so
+    unauthenticated attempts (401) still count toward the limit."""
     for _ in range(10):
         response = rate_limited_client.delete("/mechanics/999")
-        assert response.status_code == 404
+        assert response.status_code == 401
 
     response = rate_limited_client.delete("/mechanics/999")
 

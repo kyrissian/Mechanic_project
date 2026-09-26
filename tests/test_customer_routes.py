@@ -56,18 +56,72 @@ def test_create_customer_rejects_missing_password(client):
     assert "password" in response.json["details"]
 
 
-def test_get_customers(client):
-    """GET /customers should return every customer that's been created."""
-    client.post("/customers", json=make_customer_payload())
-    client.post(
-        "/customers",
-        json=make_customer_payload(name="Sam Diaz", email="sam@example.com"),
-    )
+def test_get_customers_default_pagination(client):
+    """GET /customers with no query params should return the first
+    page, 7 per page, wrapped in the pagination envelope."""
+    for i in range(9):
+        client.post("/customers", json=make_customer_payload(i))
 
     response = client.get("/customers")
 
     assert response.status_code == 200
-    assert len(response.json) == 2
+    assert len(response.json["customers"]) == 7
+    assert response.json["total"] == 9
+    assert response.json["page"] == 1
+    assert response.json["page_size"] == 7
+    assert response.json["total_pages"] == 2
+
+
+def test_get_customers_second_page(client):
+    """?page=2 should return the remaining customers past the first
+    page_size worth."""
+    for i in range(9):
+        client.post("/customers", json=make_customer_payload(i))
+
+    response = client.get("/customers?page=2")
+
+    assert response.status_code == 200
+    assert len(response.json["customers"]) == 2
+    assert response.json["page"] == 2
+
+
+def test_get_customers_custom_page_size(client):
+    """?page_size should override the default of 7."""
+    for i in range(5):
+        client.post("/customers", json=make_customer_payload(i))
+
+    response = client.get("/customers?page_size=3")
+
+    assert response.status_code == 200
+    assert len(response.json["customers"]) == 3
+    assert response.json["page_size"] == 3
+    assert response.json["total_pages"] == 2
+
+
+def test_get_customers_page_size_is_capped(client):
+    """A page_size above the cap (50) should be clamped down rather
+    than returning an unbounded number of rows."""
+    for i in range(3):
+        client.post("/customers", json=make_customer_payload(i))
+
+    response = client.get("/customers?page_size=9999")
+
+    assert response.status_code == 200
+    assert response.json["page_size"] == 50
+    assert len(response.json["customers"]) == 3
+
+
+def test_get_customers_page_past_the_end(client):
+    """Requesting a page beyond the last real page should return an
+    empty list, not a 404 -- the request itself is valid, there's
+    just no data there."""
+    client.post("/customers", json=make_customer_payload())
+
+    response = client.get("/customers?page=999")
+
+    assert response.status_code == 200
+    assert response.json["customers"] == []
+    assert response.json["total"] == 1
 
 
 def test_get_single_customer(client):

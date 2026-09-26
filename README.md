@@ -6,12 +6,13 @@
 ![Marshmallow](https://img.shields.io/badge/Marshmallow-black?logoColor=white&style=flat-square)
 ![MySQL](https://img.shields.io/badge/MySQL-4479A1?logo=mysql&logoColor=white&style=flat-square)
 ![JWT](https://img.shields.io/badge/JWT-black?logo=jsonwebtokens&logoColor=white&style=flat-square)
+![Faker](https://img.shields.io/badge/Faker-FF6E42?style=flat-square)
 ![pytest](https://img.shields.io/badge/pytest-0A9EDC?logo=pytest&logoColor=white&style=flat-square)
 ![Postman](https://img.shields.io/badge/Postman-FF6C37?logo=postman&logoColor=white&style=flat-square)
 ![Pylint](https://img.shields.io/badge/Pylint-enabled-brightgreen?style=flat-square)
 ![GitHub Actions](https://img.shields.io/badge/GitHub_Actions-2088FF?logo=githubactions&logoColor=white&style=flat-square)
 
-A Flask + SQLAlchemy + MySQL backend for a mechanic shop, managing customers, mechanics, and service tickets, with a Marshmallow-validated, JWT-authenticated REST API built on the Application Factory pattern. Built for the "Database Design and Planning with ERDs," "SQLAlchemy Relationships," "Marshmallow Schemas & CRUD Endpoints," "Application Factory Pattern," "Rate Limiting and Caching," and "Token Authentication" course modules.
+A Flask + SQLAlchemy + MySQL backend for a mechanic shop, with role-based JWT authentication (customer, mechanic, manager), a real service-ticket lifecycle (status and cost), Marshmallow-validated CRUD, and a Faker-driven seed script -- built on the Application Factory pattern. Built for the "Database Design and Planning with ERDs," "SQLAlchemy Relationships," "Marshmallow Schemas & CRUD Endpoints," "Application Factory Pattern," "Rate Limiting and Caching," "Token Authentication," and "Advanced SQLAlchemy Queries" course modules.
 
 **Author:** Kathy Booth (with contributions from Claude and GitHub Copilot)
 
@@ -23,71 +24,84 @@ A Flask + SQLAlchemy + MySQL backend for a mechanic shop, managing customers, me
 - [Tech Stack](#tech-stack)
 - [Getting Started](#getting-started)
 - [Database Setup](#database-setup)
+- [Seed Data](#seed-data)
 - [Entity-Relationship Diagram](#entity-relationship-diagram)
+- [Roles & Authorization](#roles--authorization)
 - [API Endpoints](#api-endpoints)
 - [Authentication](#authentication)
 - [Rate Limiting & Caching](#rate-limiting--caching)
+- [Pagination](#pagination)
 - [Error Handling](#error-handling)
 - [Project Structure](#project-structure)
 - [Architecture Notes](#architecture-notes)
 - [Testing](#testing)
 - [CI](#ci)
+- [Future Extensions](#future-extensions)
 
 ---
 
 ## Changelog
 
+### 2026-09-25: Role-Based Authorization, Ticket Lifecycle, Sorting, and Pagination
+
+This is the largest single change to the project so far -- a deliberate redesign that goes well beyond this lesson's minimum requirements, aimed at making the API reflect how a real shop would actually operate rather than leaving every action open to everyone.
+
+- **Mechanic authentication and roles.** `Mechanic` gained `password_hash` and `role` (`"mechanic"` or `"manager"`). `POST /mechanics/login` mirrors customer login. Unlike `Customer`, a mechanic account cannot self-register -- only an existing manager can create one, closing the "any mechanic could act with full privileges" gap that motivated this whole redesign in the first place. See [Roles & Authorization](#roles--authorization) for the full reasoning behind every route's access level.
+- **Service ticket lifecycle.** `ServiceTicket` gained `status` (`Pending` → `In Progress` → `Completed` → `Paid` → `Picked Up`) and `cost` (the estimate given up front, editable later). Any logged-in mechanic can update a ticket's status -- that's the one action every mechanic performs as part of doing the actual work. Editing a ticket's description or cost, and assigning or removing mechanics (single or bulk), are manager-only.
+- **`service_date` is now a real `Date` column** (was `VARCHAR`), and **`salary`/`cost` use `Decimal`, not float** -- see [Architecture Notes](#architecture-notes) for why, and for the correction to this README's own earlier (mistaken) claim that the class ERD required exact type fidelity.
+- **Bulk mechanic assignment.** `PUT /service-tickets/<id>/edit` takes `add_ids`/`remove_ids` and applies both in one request. Deliberately idempotent on redundancy (adding an already-assigned mechanic, or removing one who isn't assigned, is silently skipped) -- unlike the single-action `assign-mechanic`/`remove-mechanic` routes, which still reject exact redundancy as an error. A mechanic id that doesn't exist at all is still a real `404` either way.
+- **Salary privacy.** A regular mechanic can view their own full profile (including salary) but not anyone else's, and cannot see the full roster at all (`GET /mechanics` is manager-only now, since it includes everyone's pay). The three sorting/insight endpoints below are open to any mechanic but never include salary in their response.
+- **Sorting/insight endpoints**, all mechanic-authenticated, all supporting `?order=asc` to reverse the default descending sort:
+  - `GET /mechanics/most-tickets` -- total tickets ever worked
+  - `GET /mechanics/open-tickets` -- currently open tickets (Pending/In Progress/Completed)
+  - `GET /mechanics/closed-tickets` -- closed tickets (Paid/Picked Up)
+- **Pagination on `GET /customers`.** `?page`/`?page_size` (default page size 7, capped at 50), wrapped in an object (`{"customers": [...], "total": ..., "page": ..., "page_size": ..., "total_pages": ...}`) instead of a bare array -- see [Pagination](#pagination).
+- **`seed.py`**, a new standalone script using Faker to wipe and repopulate the database with a manager, several mechanics (including three intentionally unused ones for testing deletion), a dozen-plus customers, and 33 tickets spread across every status. See [Seed Data](#seed-data).
+- **68 new/updated tests** across mechanic auth, mechanic routes, mechanic sorting, service ticket routes, customer routes (pagination), rate limiting, and caching.
+
 ### 2026-09-23: Token Authentication and Standardized Error Handling
 
-- Added JWT-based token authentication for the `Customer` resource, per the Token Authentication lesson. `POST /customers/login` exchanges an email and password for a token; `GET /customers/my-tickets`, `PUT /customers/<id>`, and `DELETE /customers/<id>` all require a valid token, and the latter two additionally verify the token's customer matches the id in the URL, so a customer can only ever modify or delete their own account. See [Authentication](#authentication) for the full reasoning behind which routes were and weren't protected.
-- `Customer` gained a `password_hash` column, hashed with `werkzeug.security` and never returned in any response. This is **not** part of the class-provided ERD -- documented here as a deliberate, necessary extension for this lesson, same category as the extra-credit GET-one routes, rather than a silent departure from the diagram.
-- Standardized every validation-failure response across all three resources to the same `{"error": "...", "details": {...}}` envelope every other error in this API already used -- closing a real gap flagged in instructor feedback on the previous submission ("comprehensive error handling and custom error messages"). Previously, a Marshmallow validation failure returned a bare field-by-field dict with no `"error"` key at all, the one inconsistent response shape in the whole API. See [Error Handling](#error-handling).
+- Added JWT-based token authentication for the `Customer` resource. `POST /customers/login` exchanges an email and password for a token; `GET /customers/my-tickets`, `PUT /customers/<id>`, and `DELETE /customers/<id>` all require a valid token, and the latter two additionally verify the token's customer matches the id in the URL.
+- `Customer` gained a `password_hash` column, hashed with `werkzeug.security` and never returned in any response. This is **not** part of the class-provided ERD -- documented as a deliberate, necessary extension for this lesson.
+- Standardized every validation-failure response across all three resources to the same `{"error": "...", "details": {...}}` envelope every other error in this API already used -- closing a real gap flagged in instructor feedback on the previous submission ("comprehensive error handling and custom error messages").
 - Added `app/utils/util.py` (`encode_token`, `token_required`) and `app/utils/errors.py` (`validation_error_response`), both shared across blueprints rather than duplicated per resource.
-- 15 new/updated tests: 10 new in `test_customer_auth.py` (login success/failure, missing-credentials, password never leaking into a response, token-required enforcement on `my-tickets`, malformed/invalid/missing tokens, returning only the logged-in customer's own tickets), plus existing customer-route tests updated for the required `password` field and the new auth requirements on update/delete.
+- 15 new/updated tests.
 
 ### 2026-09-22: Extended Rate Limiting and Caching Coverage
 
-- Added a route-by-route review of where rate limiting and caching actually make sense, rather than applying the lesson's example to a single route each. See [Rate Limiting & Caching](#rate-limiting--caching) for the full reasoning per resource.
-- Rate limited `DELETE /customers/<id>` and `DELETE /mechanics/<id>` to 10 requests per hour per client IP -- deletion is the most destructive route on each resource, so the limit exists to contain a compromised client or a buggy script looping through ids, not to throttle normal use.
-- Added a global default limit (`200 per day, 50 per hour`) on the `Limiter` instance itself, applying automatically to every route that has no route-specific `@limiter.limit`, as a backstop against scraping or a runaway polling loop.
-- Extended caching to `GET /mechanics/<id>` (single mechanic), using `@cache.memoize()` instead of `@cache.cached()` so each mechanic id gets its own cache entry. `update_mechanic` and `delete_mechanic` now clear both the list cache and that mechanic's own cache entry with `cache.delete_memoized()`.
-- Deliberately did **not** extend caching to `Customer` or `ServiceTicket` routes -- both change far too often relative to how often they're read for a cache to pay off. See [Rate Limiting & Caching](#rate-limiting--caching).
-- 8 new tests: 4 for the new rate limits (mechanic creation, both delete routes, the global default), 3 for single-mechanic caching and its invalidation on update/delete, and 1 recovering a missing-import bug in `test_mechanic_caching.py` caught via Pylint/Pylance.
+- Rate limited `DELETE /customers/<id>` and `DELETE /mechanics/<id>` to 10 requests per hour per client IP -- deletion is the most destructive route on each resource.
+- Added a global default limit (`200 per day, 50 per hour`) on the `Limiter` instance itself, applying automatically to every route that has no route-specific `@limiter.limit`.
+- Extended caching to `GET /mechanics/<id>` (single mechanic), using `@cache.memoize()` instead of `@cache.cached()`. (This was later removed entirely in the 2026-09-25 update, once the route also required authentication -- see [Architecture Notes](#architecture-notes).)
+- 8 new tests.
 
 ### 2026-09-21: Rate Limiting and Caching
 
-- Added Flask-Limiter, rate limiting `POST /customers` to 5 requests per hour per client IP -- customer creation is the write path most open to abuse (junk records, or probing which emails are already registered), and rejected requests count toward the limit specifically to stop that kind of probing. Added a dedicated `429` JSON error handler in `app/error_handlers.py` so a client sees which limit it hit, not just Flask-Limiter's default plain-text response.
-- Added Flask-Caching, caching `GET /mechanics` for 60 seconds -- the mechanic roster changes rarely but is read often (e.g. whenever someone assigns a mechanic to a ticket). `create_mechanic`, `update_mechanic`, and `delete_mechanic` all explicitly clear the cache after committing, so the 60-second timeout is a backstop rather than the reason data stays fresh -- a client never sees stale data after a write through the API.
-- Config split by environment: `DevelopmentConfig` uses `SimpleCache` (in-process) and a `memory://` rate-limit store; `TestingConfig` uses `NullCache` and disables rate limiting entirely, so the existing 51 tests are unaffected. Two test-only config subclasses in `conftest.py`, `RateLimitedTestConfig` and `CachedTestConfig`, opt back into one feature at a time for the tests that need it.
-- 10 new tests added: 5 for rate limiting (`test_rate_limiting.py`) and 5 for caching and its invalidation on create/update/delete (`test_mechanic_caching.py`).
+- Added Flask-Limiter, rate limiting `POST /customers` to 5 requests per hour per client IP.
+- Added Flask-Caching, caching `GET /mechanics` for 60 seconds, with explicit invalidation on every write.
+- Config split by environment: `DevelopmentConfig` uses `SimpleCache` and a `memory://` rate-limit store; `TestingConfig` uses `NullCache` and disables rate limiting entirely.
+- 10 new tests.
 
 ### 2026-09-16: Global Error Handling, CI, and Dependency Fix
 
-- Added global error handlers (`app/error_handlers.py`) so unmatched routes, wrong HTTP methods, and malformed/missing JSON bodies all return consistent JSON instead of Flask's default HTML error pages. Not required by the assignment -- added to directly address "thorough error handling for all API calls."
-- Added `.github/workflows/ci.yml`: runs the full test suite and Pylint on every push/PR. Also not required by the assignment -- carried over from CI/CD coursework on a prior project. Named `ci.yml` (not `main.yml`) deliberately: unlike that prior project, this API has nowhere to deploy to, so there's no CD half to this workflow.
-- Fixed a real gap in `requirements.txt`: `flask-marshmallow`, `marshmallow-sqlalchemy`, and `pylint` had all been installed and used for some time but were never added to the file, which would have broken a fresh install (or CI) with `ModuleNotFoundError`. Verified the fix by installing strictly from `requirements.txt` into a brand-new virtual environment and re-running the full suite.
-- Added 4 new tests covering unmatched routes (404), wrong HTTP methods (405), malformed JSON syntax (400), and the wrong `Content-Type` header (415).
+- Added global error handlers (`app/error_handlers.py`) so unmatched routes, wrong HTTP methods, and malformed/missing JSON bodies all return consistent JSON instead of Flask's default HTML error pages.
+- Added `.github/workflows/ci.yml`: runs the full test suite and Pylint on every push/PR.
+- Fixed a real gap in `requirements.txt` that would have broken a fresh install with `ModuleNotFoundError`.
+- 4 new tests.
 
 ### 2026-09-15: Mechanic and ServiceTicket Resources, Application Factory Refactor
 
-- Added full CRUD for `Mechanic` (`/mechanics`): create, get-all, get-one (extra credit), update, delete.
-- Added `ServiceTicket` routes (`/service-tickets`): create, get-all, get-one (extra credit), assign-mechanic, remove-mechanic. Deliberately no update or delete for the ticket itself -- completed work should never be erasable.
-- Reorganized the project into the Application Factory pattern's blueprint structure: each resource (`customer`, `mechanic`, `service_ticket`) now has its own folder under `app/blueprints/` containing `__init__.py` (creates and registers the Blueprint), `routes.py`, and `schemas.py` -- replacing the earlier flat `app/routes/` and `app/schemas/` folders.
-- Moved `config.py` from `app/config.py` to the project root, matching the lesson's file structure.
-- Refactored `Customer`'s routes to use a `url_prefix` (`/customers`) with relative paths, matching the pattern used for the two new resources, for consistency across all three.
-- 24 new tests added across both new resources' models and routes.
+- Added full CRUD for `Mechanic` and routes for `ServiceTicket` (create, get-all, get-one, assign/remove-mechanic).
+- Reorganized into the Application Factory pattern's blueprint structure.
+- 24 new tests.
 
 ### 2026-09-14: ERD Correction
 
-- The follow-up "SQLAlchemy Relationships" lesson provided the class's official ERD, which differed from the earlier draft ERD these models were first built against. Rebuilt all three models and the junction table to match it exactly: `Customer` now uses a single `name` field (was `first_name`/`last_name`, no `address`); `Mechanic` gained `email`, lost `address`, and `salary` changed from `INT` to `FLOAT`; `ServiceTicket` was significantly simplified to just `vin`, `service_date`, and `service_desc` (was `date_received`/`make`/`model`/`year`/`work_description`/`status`); the junction table was renamed `service_mechanics` with columns `ticket_id`/`mechanic_id` (was `st_mechanic` with `st_id`/`mech_id`). Tests were updated to match, following the same TDD habit as the original build.
+- Rebuilt all three models and the junction table to match the class-provided ERD exactly, after an earlier draft diverged from it.
 
 ### 2026-09-14: Initial Models & Project Setup
 
-- Set up the project as a Flask application using the app factory pattern (`create_app()`), rather than the single-file `app.py` style shown in the lesson.
-- Configured two separate environments: a real MySQL connection for development (credentials via `.env`, never committed), and an isolated in-memory SQLite database for tests.
-- Built `Customer`, `Mechanic`, and `ServiceTicket` models matching the class-provided ERD, plus the `st_mechanic` junction table for the many-to-many relationship between mechanics and service tickets.
-- Wrote model-level tests alongside each model as it was built (TDD), rather than after the fact.
-- Created `run.py` as the actual entry point that builds the real MySQL tables and starts the dev server.
+- Set up the project as a Flask application using the app factory pattern, with separate MySQL (development) and SQLite (testing) configs.
+- Built `Customer`, `Mechanic`, and `ServiceTicket` models plus the junction table.
 
 ---
 
@@ -99,9 +113,10 @@ A Flask + SQLAlchemy + MySQL backend for a mechanic shop, managing customers, me
 | ORM                        | Flask-SQLAlchemy (SQLAlchemy 2.0 `Mapped`/`mapped_column` style)                     |
 | Serialization / validation | Flask-Marshmallow, marshmallow-sqlalchemy                                            |
 | Database                   | MySQL (via `mysql-connector-python`)                                                 |
-| Authentication             | JWT (`python-jose`), `werkzeug.security` for password hashing                        |
+| Authentication             | JWT (`python-jose`), `werkzeug.security` for password hashing, role-based access     |
 | Rate limiting              | Flask-Limiter (in-memory store)                                                      |
 | Caching                    | Flask-Caching (`SimpleCache` in development, `NullCache` in tests)                   |
+| Seed data                  | Faker                                                                                |
 | Config / secrets           | `python-dotenv` (`.env`, gitignored)                                                 |
 | Testing                    | pytest, with an isolated in-memory SQLite database                                   |
 | Manual API testing         | Postman (collection included in the repo)                                            |
@@ -137,9 +152,11 @@ DB_PASSWORD=your_actual_mysql_password
 DB_HOST=localhost
 DB_NAME=mechanic_shop
 SECRET_KEY=a_long_random_string_used_to_sign_jwts
+MANAGER_EMAIL=manager@shop.com
+MANAGER_PASSWORD=choose_your_own_password
 ```
 
-`SECRET_KEY` signs and verifies every JWT issued by `POST /customers/login` (see [Authentication](#authentication)). Treat it like a password -- any long random string works for local development, and it must never be committed.
+`SECRET_KEY` signs and verifies every JWT (customer and mechanic alike). `MANAGER_EMAIL`/`MANAGER_PASSWORD` are read only by `seed.py`, to create the one manager account you'll actually want to remember the login for (see [Seed Data](#seed-data)). Treat all of these like passwords -- never commit real values.
 
 ### Run locally
 
@@ -155,145 +172,208 @@ This creates every table defined by the models (if they don't already exist) in 
 
 1. Open MySQL Workbench and connect to your local MySQL instance.
 2. Run `CREATE DATABASE mechanic_shop;` (or whatever name you used for `DB_NAME` above).
-3. Run `python run.py` once — this creates all the tables automatically from the models. No manual `CREATE TABLE` statements needed.
+3. Run `python run.py` once to create all tables, **or** run `python seed.py` to create the tables _and_ populate them with realistic demo data in one step (recommended -- see [Seed Data](#seed-data)).
+
+---
+
+## Seed Data
+
+```powershell
+python seed.py
+```
+
+This **drops and recreates every table**, then populates the database with:
+
+- **1 manager** -- credentials from `.env` (`MANAGER_EMAIL`/`MANAGER_PASSWORD`), since this is the account you're most likely to log in as by hand.
+- **4 core mechanics** -- deliberately uneven ticket loads (one busy, one moderate, one light, one with zero tickets, as if freshly hired), so the sorting endpoints have something real to show.
+- **3 extra mechanics** -- never assigned to any ticket, safe to `DELETE` via the API without disturbing anything else. Meant specifically for manually testing `delete_mechanic`.
+- **12 core customers**, each with at least one ticket.
+- **2 extra customers** with no tickets -- safe to `DELETE`, same purpose as the extra mechanics.
+- **33 service tickets**, spread across all five statuses, with VINs generated to satisfy the same ISO-3779-style validator the API itself enforces (Faker has no built-in VIN provider).
+
+**Password scheme (local demo data only, never for production):** every seeded customer's password is `customerpassword<id>`, and every seeded regular mechanic's password is `mechanicpassword<id>`, where `<id>` is that record's real database id -- so looking up an id in MySQL Workbench tells you its password. The manager account is the one exception, using whatever you set in `.env`, since it's the account meant for you to actually remember.
+
+Running `seed.py` again wipes and rebuilds from scratch -- it does not merge with or preserve anything added since the last run, including data created by hand through Postman. This is intentional: the predictable password scheme only holds if ids are predictable, which requires starting from an empty database every time.
 
 ---
 
 ## Entity-Relationship Diagram
 
-Models match the class-provided ERD exactly, with one deliberate addition:
+Models started from the class-provided ERD, with several deliberate departures made once we confirmed nothing in the assignment actually requires exact type fidelity to it (see [Architecture Notes](#architecture-notes) for that story):
 
-- **Customer** — `id`, `name`, `email`, `phone`, plus `password_hash` (**not** part of the original ERD -- added for the Token Authentication lesson, since customers need a way to log in; see [Authentication](#authentication))
-- **Service_Ticket** — `id`, `vin`, `service_date`, `service_desc`, plus a foreign key to `Customer`
-- **Mechanic** — `id`, `name`, `email`, `phone`, `salary` (float)
-- **Service_Mechanics** (junction table) — `ticket_id` + `mechanic_id`, linking `Service_Ticket` and `Mechanic`
+- **Customer** -- `id`, `name`, `email`, `phone`, plus `password_hash` (not in the original ERD -- added for customer login)
+- **Mechanic** -- `id`, `name`, `email`, `phone`, `salary` (now `Decimal`, was `FLOAT`), plus `password_hash` and `role` (not in the original ERD -- added for mechanic login and role-based authorization)
+- **Service_Ticket** -- `id`, `vin`, `service_date` (now a real `Date`, was `VARCHAR`), `service_desc`, plus a foreign key to `Customer`, plus `status` and `cost` (not in the original ERD -- added for the ticket lifecycle and pricing)
+- **Service_Mechanics** (junction table) -- `ticket_id` + `mechanic_id`, linking `Service_Ticket` and `Mechanic`
 
 Relationships:
 
-- **Customer → Service_Ticket**: one-to-many (a customer can have many service tickets, each ticket belongs to exactly one customer)
-- **Service_Ticket ↔ Mechanic**: many-to-many, via `Service_Mechanics` (a ticket can require multiple mechanics, a mechanic can work on multiple tickets)
+- **Customer → Service_Ticket**: one-to-many
+- **Service_Ticket ↔ Mechanic**: many-to-many, via `Service_Mechanics`
 
-Note: `service_date` is stored as a string (`VARCHAR`), not a `DATE` column, and the junction table's two columns aren't marked as a composite primary key -- both match the ERD and the lesson's own example exactly, rather than "improving" on the given design, since these models are graded against this specific diagram. `password_hash` is the one intentional exception, documented above.
+---
+
+## Roles & Authorization
+
+Two roles exist on `Mechanic`: `"mechanic"` and `"manager"`. There is no third tier, and no concept of a software-vendor-level "admin" spanning multiple shops -- see [Future Extensions](#future-extensions) for that idea, deliberately left unbuilt.
+
+Every route's access level was reasoned through individually, the same way rate limiting and caching were in earlier lessons, rather than gating everything uniformly:
+
+| Action                                                                 | Who                                            | Why                                                                                                                                                                        |
+| ---------------------------------------------------------------------- | ---------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Create a mechanic account                                              | Manager only                                   | Unlike `Customer`, staff accounts cannot self-register. Letting any mechanic create another mechanic (or promote themselves) would defeat the whole point of having roles. |
+| View the full mechanic roster (with salary)                            | Manager only                                   | Salary is sensitive; a regular mechanic has no legitimate reason to see everyone's pay.                                                                                    |
+| View a single mechanic's profile (with salary)                         | The mechanic themselves, or a manager (anyone) | A mechanic can always see their own salary; only a manager can look up someone else's.                                                                                     |
+| Update or delete a mechanic account                                    | Manager only                                   | Roster changes -- including salary and role -- are a management decision.                                                                                                  |
+| Create a service ticket                                                | Manager only                                   | Creation sets `cost` and `service_desc` up front, both otherwise manager-controlled everywhere else; gating creation the same way keeps that consistent.                   |
+| View tickets (list, single, or "my tickets")                           | Any logged-in mechanic                         | Staff need visibility into the queue; "my tickets" is scoped to what that mechanic is personally assigned to.                                                              |
+| Edit a ticket's description/cost                                       | Manager only                                   | Same reasoning as ticket creation.                                                                                                                                         |
+| Update a ticket's status                                               | Any logged-in mechanic                         | This is the one action every mechanic performs as part of doing the actual work, not a management decision.                                                                |
+| Assign/remove mechanics (single or bulk)                               | Manager only                                   | Assigning staff to work is a management decision.                                                                                                                          |
+| Sorting/insight endpoints (most-tickets, open-tickets, closed-tickets) | Any logged-in mechanic                         | Useful to everyone for gauging workload; response never includes salary.                                                                                                   |
+
+A customer's own authorization is unchanged from the previous lesson: they can view their own tickets (`GET /customers/my-tickets`, read-only, status visible but not editable) and manage their own account, and nothing else.
 
 ---
 
 ## API Endpoints
 
-All request/response bodies are JSON. Routes marked 🔒 require a valid Bearer token -- see [Authentication](#authentication).
+All request/response bodies are JSON. Routes marked 🔒 require a valid Bearer token (customer or mechanic, as noted); 👔 marks manager-only routes.
 
 ### Customer (`/customers`)
 
-| Method    | URL                     | Purpose                                  |
-| --------- | ----------------------- | ---------------------------------------- |
-| POST      | `/customers`            | Create a customer                        |
-| POST      | `/customers/login`      | Log in, receive a JWT                    |
-| GET       | `/customers`            | List all customers                       |
-| GET       | `/customers/<id>`       | Get one customer                         |
-| GET 🔒    | `/customers/my-tickets` | Get the logged-in customer's own tickets |
-| PUT 🔒    | `/customers/<id>`       | Update a customer (own account only)     |
-| DELETE 🔒 | `/customers/<id>`       | Delete a customer (own account only)     |
+| Method    | URL                     | Purpose                                   |
+| --------- | ----------------------- | ----------------------------------------- |
+| POST      | `/customers`            | Create (register) a customer              |
+| POST      | `/customers/login`      | Log in, receive a JWT                     |
+| GET       | `/customers`            | List customers, **paginated** (see below) |
+| GET       | `/customers/<id>`       | Get one customer                          |
+| GET 🔒    | `/customers/my-tickets` | Get the logged-in customer's own tickets  |
+| PUT 🔒    | `/customers/<id>`       | Update a customer (own account only)      |
+| DELETE 🔒 | `/customers/<id>`       | Delete a customer (own account only)      |
 
 ### Mechanic (`/mechanics`)
 
-| Method | URL               | Purpose                         |
-| ------ | ----------------- | ------------------------------- |
-| POST   | `/mechanics`      | Create a mechanic               |
-| GET    | `/mechanics`      | List all mechanics              |
-| GET    | `/mechanics/<id>` | Get one mechanic (extra credit) |
-| PUT    | `/mechanics/<id>` | Update a mechanic               |
-| DELETE | `/mechanics/<id>` | Delete a mechanic               |
+| Method    | URL                         | Purpose                                              |
+| --------- | --------------------------- | ---------------------------------------------------- |
+| POST 👔   | `/mechanics`                | Create a mechanic                                    |
+| POST      | `/mechanics/login`          | Log in, receive a JWT (carries the mechanic's role)  |
+| GET 👔    | `/mechanics`                | List all mechanics, including salary                 |
+| GET 🔒    | `/mechanics/<id>`           | Get one mechanic -- own profile, or any if manager   |
+| GET 🔒    | `/mechanics/most-tickets`   | Mechanics sorted by total tickets worked (`?order=`) |
+| GET 🔒    | `/mechanics/open-tickets`   | Mechanics sorted by open ticket count (`?order=`)    |
+| GET 🔒    | `/mechanics/closed-tickets` | Mechanics sorted by closed ticket count (`?order=`)  |
+| PUT 👔    | `/mechanics/<id>`           | Update a mechanic                                    |
+| DELETE 👔 | `/mechanics/<id>`           | Delete a mechanic                                    |
 
 ### Service Ticket (`/service-tickets`)
 
-| Method | URL                                                   | Purpose                               |
-| ------ | ----------------------------------------------------- | ------------------------------------- |
-| POST   | `/service-tickets`                                    | Create a service ticket               |
-| GET    | `/service-tickets`                                    | List all service tickets              |
-| GET    | `/service-tickets/<id>`                               | Get one service ticket (extra credit) |
-| PUT    | `/service-tickets/<id>/assign-mechanic/<mechanic_id>` | Assign a mechanic to a ticket         |
-| PUT    | `/service-tickets/<id>/remove-mechanic/<mechanic_id>` | Remove a mechanic from a ticket       |
+| Method  | URL                                                   | Purpose                                            |
+| ------- | ----------------------------------------------------- | -------------------------------------------------- |
+| POST 👔 | `/service-tickets`                                    | Create a service ticket                            |
+| GET 🔒  | `/service-tickets`                                    | List all service tickets                           |
+| GET 🔒  | `/service-tickets/my-tickets`                         | Tickets the logged-in mechanic is assigned to      |
+| GET 🔒  | `/service-tickets/<id>`                               | Get one service ticket                             |
+| PUT 👔  | `/service-tickets/<id>`                               | Update description and/or cost                     |
+| PUT 🔒  | `/service-tickets/<id>/status`                        | Update status (any mechanic)                       |
+| PUT 👔  | `/service-tickets/<id>/assign-mechanic/<mechanic_id>` | Assign one mechanic to a ticket                    |
+| PUT 👔  | `/service-tickets/<id>/remove-mechanic/<mechanic_id>` | Remove one mechanic from a ticket                  |
+| PUT 👔  | `/service-tickets/<id>/edit`                          | Bulk add/remove mechanics (`add_ids`/`remove_ids`) |
 
-Deliberately no `PUT`/`DELETE` for the ticket resource itself -- a completed or in-progress service record should never be silently overwritten or erased.
+Deliberately no full `PUT`/`DELETE` for the ticket resource itself -- only the scoped detail/status/mechanic routes above -- so a completed or in-progress service record is never silently overwritten or erased wholesale.
 
 ---
 
 ## Authentication
 
-Token authentication (JWT) protects the `Customer` resource, per the Token Authentication lesson. Which routes require a token was decided per-route, the same way rate limiting and caching were reasoned through, rather than applying the lesson's generic example everywhere.
+Two independent JWT flows exist, both signed with the same `SECRET_KEY` but distinguished by a `"type"` claim in the token payload (`"customer"` or `"mechanic"`) -- without that claim, a customer's own valid token could potentially be presented to a mechanic-only route (or vice versa) if their ids happened to collide, since a JWT's signature alone says nothing about which kind of account issued it.
 
-### The flow
+### Customer flow
 
-1. **`POST /customers`** creates an account with a `password`. It's hashed with `werkzeug.security.generate_password_hash` before ever touching the database -- the plaintext password is never stored, and `password`/`password_hash` are never included in any response (`CustomerSchema` excludes `password_hash` entirely and marks `password` `load_only`).
-2. **`POST /customers/login`** accepts `{"email": "...", "password": "..."}`, verifies it with `check_password_hash`, and returns `{"status": "success", "auth_token": "<jwt>"}` on success. Deliberately returns the same `401` and message whether the email doesn't exist or the password is wrong -- distinguishing the two would let an attacker enumerate which emails are registered.
-3. Protected routes are called with `Authorization: Bearer <token>`. The `@token_required` decorator (`app/utils/util.py`) validates the token and passes the token's `customer_id` into the route function -- it's never read from the URL or request body for the logged-in customer's own identity.
-4. Tokens expire after 1 hour and are signed with `SECRET_KEY` (from `.env` in development, a fixed test value in `TestingConfig` -- see [Architecture Notes](#architecture-notes)).
+1. `POST /customers` registers an account with a hashed password.
+2. `POST /customers/login` exchanges email/password for a token (`encode_token`).
+3. `token_required` validates the token and passes the customer's own id into the route.
 
-### Which routes require a token, and why
+### Mechanic flow
 
-| Route                                   | Protected?                    | Why                                                                                                                                                                                                                       |
-| --------------------------------------- | ----------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `POST /customers`                       | No                            | Can't require a token before an account exists.                                                                                                                                                                           |
-| `POST /customers/login`                 | No                            | Can't require a token to obtain a token.                                                                                                                                                                                  |
-| `GET /customers`, `GET /customers/<id>` | No                            | Not scoped to "my own data" -- listing/viewing customers is an admin/staff action, and this system has no staff-login concept. Out of scope for this lesson.                                                              |
-| `GET /customers/my-tickets`             | **Yes**                       | The entire point of this route is "show me my own tickets" -- it only makes sense authenticated. `customer_id` comes from the token, never a URL parameter, so there's no id to tamper with in the first place.           |
-| `PUT /customers/<id>`                   | **Yes**, plus ownership check | Without this, anyone who knows a customer's id could edit any customer's record. The token's `customer_id` must match the `<id>` in the URL (`403` if not), so a logged-in customer can only ever edit their own account. |
-| `DELETE /customers/<id>`                | **Yes**, plus ownership check | Same reasoning as update -- deletion is destructive, and only the account's owner may perform it.                                                                                                                         |
-| `Mechanic` and `ServiceTicket` routes   | No                            | The token in this system identifies a _customer_, not a mechanic or staff member. There's no actor here who'd hold a mechanic-scoped token, so applying `@token_required` to those routes wouldn't model anything real.   |
+1. `POST /mechanics` (manager-only) creates a mechanic account with a role and a hashed password.
+2. `POST /mechanics/login` exchanges email/password for a token that also carries the mechanic's role (`encode_mechanic_token`).
+3. `mechanic_token_required` validates the token and passes the mechanic's id and role into the route.
+4. `manager_required` wraps `mechanic_token_required`, additionally checking that the role is `"manager"` -- a valid, unexpired mechanic token is still correctly rejected from a manager-only route if its role doesn't match.
 
-A limited or cached response carries the same status codes and JSON shape described in [Error Handling](#error-handling) above, with one addition specific to auth:
+Both logins return the identical `401` message for a wrong password and an unregistered email, so a client can never use the response to enumerate which accounts exist.
 
-- A missing, malformed, expired, or invalid token returns `401` with `{"error": "..."}` (e.g. `"Token is missing."`, `"Token has expired."`, `"Invalid token."`).
-- A valid token belonging to the wrong customer returns `403` with `{"error": "You may only update/delete your own account."}`.
+A limited, cached, or authenticated response carries the same status codes and JSON shape described in [Error Handling](#error-handling), with these additions:
+
+- A missing, malformed, expired, or wrong-type token returns `401` with `{"error": "..."}`.
+- A structurally valid token of the wrong role or wrong owner returns `403` with `{"error": "..."}`.
 
 ---
 
 ## Rate Limiting & Caching
 
-Every route decision below comes down to one question: **how often is this route abused or destructive (for limiting), and how often is its data read versus written (for caching)?**
+Every route decision comes down to one question: **how often is this route abused or destructive (for limiting), and how often is its data read versus written (for caching)?**
 
 ### Rate limiting
 
-| Route                    | Limit                                      | Why                                                                                                                                                                                                                                                            |
-| ------------------------ | ------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `POST /customers`        | 5 / hour / IP                              | Creation is the write path most open to abuse -- junk records, or probing which emails are already registered. Rejected (400) attempts still count toward the limit, which is what stops that probing.                                                         |
-| `POST /mechanics`        | 5 / hour / IP                              | Same reasoning as customer creation. In practice this limit never touches legitimate use -- a real shop only registers a handful of mechanics total.                                                                                                           |
-| `POST /customers/login`  | 10 / hour / IP                             | Login is a classic brute-force target -- without a limit, a script could try thousands of password guesses against one email address. Both failed and successful attempts count toward the limit.                                                              |
-| `DELETE /customers/<id>` | 10 / hour / IP                             | Deletion is the most destructive route on the resource. The limit guards against a compromised client or a buggy script looping through ids and wiping records, not against a person manually cleaning up a few records.                                       |
-| `DELETE /mechanics/<id>` | 10 / hour / IP                             | Same reasoning as customer deletion.                                                                                                                                                                                                                           |
-| Every other route        | 200 / day, 50 / hour / IP (global default) | A floor applied to the whole app via `default_limits` on the `Limiter` instance itself, catching routes with no limit of their own (reads, updates, ticket assignment) -- a backstop against scraping or a runaway polling loop, not a throttle on normal use. |
-
-`PUT` (update) routes and `GET` routes carry no route-specific limit: updates don't grow or destroy data, so their damage ceiling is much lower than create or delete, and reads aren't destructive at all. Both still fall under the global default above.
+| Route                                               | Limit                                      | Why                                                                                                                                                              |
+| --------------------------------------------------- | ------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `POST /customers`                                   | 5 / hour / IP                              | Creation is the write path most open to abuse. Rejected (400) attempts still count toward the limit, which is what stops probing for registered emails.          |
+| `POST /mechanics`                                   | 5 / hour / IP                              | Same reasoning, though it never touches legitimate use -- a real shop only registers a handful of mechanics total, and only a manager can even reach this route. |
+| `POST /customers/login` / `POST /mechanics/login`   | 10 / hour / IP                             | Login is a classic brute-force target. Both failed and successful attempts count toward the limit.                                                               |
+| `DELETE /customers/<id>` / `DELETE /mechanics/<id>` | 10 / hour / IP                             | Deletion is the most destructive route on either resource.                                                                                                       |
+| Every other route                                   | 200 / day, 50 / hour / IP (global default) | A floor applied via `default_limits` on the `Limiter` instance itself, catching every route with no limit of its own.                                            |
 
 ### Caching
 
-| Route                                     | Cached?                             | Why                                                                                                                                                                                                                                                                                                                                                  |
-| ----------------------------------------- | ----------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `GET /mechanics`                          | Yes, 60s                            | The mechanic roster is read constantly (e.g. every time someone assigns a mechanic to a ticket) but written to rarely (mechanics are hired occasionally, not daily). High read-to-write ratio is exactly what caching is for.                                                                                                                        |
-| `GET /mechanics/<id>`                     | Yes, 60s, per id (`@cache.memoize`) | Same reasoning as the list. Memoized per `mechanic_id` so `update_mechanic`/`delete_mechanic` can clear one mechanic's entry without invalidating every other mechanic's cached lookup.                                                                                                                                                              |
-| `GET /customers` (list/single/my-tickets) | No                                  | Customers are created and updated constantly as new work comes in -- caching would mean invalidating almost as often as it's read, adding complexity for little benefit, on top of holding personal data in memory unnecessarily. `my-tickets` in particular must never be stale: it's what a customer checks to see whether their own work is done. |
-| `GET /service-tickets` (list/single)      | No                                  | The most write-heavy resource in the app -- tickets are created and mechanics are assigned/removed throughout the day. A mechanic checking whether they've just been assigned a ticket needs the real answer, not one up to a minute old.                                                                                                            |
+| Route                                                               | Cached?         | Why                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| ------------------------------------------------------------------- | --------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `GET /mechanics`                                                    | Yes, 60s        | The roster is read constantly but written to rarely (mechanics are hired occasionally, not daily). High read-to-write ratio.                                                                                                                                                                                                                                                                                                                                   |
+| `GET /mechanics/<id>`                                               | **No, removed** | Once this route also requires authentication, `@cache.memoize` would key each cache entry by the _requesting_ mechanic's id and role too -- every different requester caching their own separate copy of the same lookup, which `cache.delete_memoized()` could no longer reliably clear on update/delete. Given this is now authenticated internal traffic rather than public, high-volume traffic, the caching benefit no longer outweighed that complexity. |
+| `GET /customers`, `GET /service-tickets`, and the sorting endpoints | No              | Written to too often (customers and tickets are created/updated constantly; the sorting endpoints depend on ticket-assignment activity across the whole shop) for a timed cache to stay accurate.                                                                                                                                                                                                                                                              |
 
-Invalidation is explicit, not timeout-only: `create_mechanic` clears the list cache; `update_mechanic` and `delete_mechanic` clear both the list cache and that mechanic's own memoized entry via `cache.delete_memoized()`. A client making a write through the API always sees its own change on the very next `GET` -- the 60-second timeout only matters for a change made outside the API entirely (e.g. directly in MySQL Workbench).
+Authentication is always the _outer_ decorator on a cached route (`@manager_required` above `@cache.cached`), never the reverse: Flask-Caching keys its cache by the request path, not by who's asking, so if caching ran first, one authenticated request's response could be served to a later, completely unauthenticated one hitting the same path.
 
-**Known limitation:** caching `GET /mechanics/<id>` also caches a `404` for an id that doesn't exist yet. `create_mechanic` has no way to know in advance which id a new mechanic will be assigned, so it can't invalidate that entry ahead of time. A client that requests an unused id right before it's created could see a stale 404 for up to 60 seconds. Accepted as a narrow edge case rather than adding complexity to solve it.
+---
 
-A limited or cached response carries the same status codes and JSON shape described in [Error Handling](#error-handling) below, with two additions:
+## Pagination
 
-- Exceeding any limit returns `429` with `{"error": "Rate limit exceeded", "detail": "..."}`, where `detail` names the specific limit that was hit (e.g. `"5 per 1 hour"` or `"50 per 1 hour"` for the global default).
-- Every response includes `X-RateLimit-Limit`, `X-RateLimit-Remaining`, and `X-RateLimit-Reset` headers, so the current state of the limit is visible in Postman without waiting to be blocked.
+`GET /customers` is paginated:
+
+```
+GET /customers?page=2&page_size=10
+```
+
+- `page` defaults to `1`; invalid or missing values fall back to the default rather than erroring.
+- `page_size` defaults to `7`, and is capped at `50` regardless of what's requested, so a client can't pull the entire table in one call.
+- A `page` past the last real page returns an **empty list**, not a `404` -- the request itself is valid, there's just nothing there.
+
+Response shape:
+
+```json
+{
+    "customers": [ ... ],
+    "total": 14,
+    "page": 1,
+    "page_size": 7,
+    "total_pages": 2
+}
+```
+
+No other list route is paginated -- the mechanic roster and ticket list are both expected to stay small enough in this project's scope that pagination wouldn't add real value, while `/customers` was the one the assignment specifically asked for.
 
 ---
 
 ## Error Handling
 
-Every error response in this API shares the same `{"error": "..."}` envelope, no matter which layer produces it -- a global handler, a route's own explicit check, or Marshmallow validation.
+Every error response in this API shares the same `{"error": "..."}` envelope, no matter which layer produces it.
 
-- **HTTP-level errors** (unmatched route → 404, wrong HTTP method → 405, malformed JSON body → 400, wrong `Content-Type` header → 415, etc.) are caught by a global handler (`app/error_handlers.py`) and returned as `{"error": "..."}` with the matching status code, instead of Flask's default HTML error page.
-- **Unexpected exceptions** in application code are caught by a second global handler, logged server-side, and returned as a generic `{"error": "An unexpected server error occurred."}` with a 500, rather than leaking a raw traceback to the client.
-- **Rate limit violations** return `429` with `{"error": "Rate limit exceeded", "detail": "..."}`, where `detail` names the specific limit that was hit (see [Rate Limiting & Caching](#rate-limiting--caching)). Flask checks status-code handlers before class handlers, so this one takes priority over the generic HTTP-level handler above.
-- **Validation failures** (a missing or malformed field on create/update/login) return `400` with `{"error": "Validation failed.", "details": {...}}`, where `details` is Marshmallow's own field-by-field message dict, e.g. `{"email": ["Missing data for required field."]}`. Built by a single shared helper, `validation_error_response()` in `app/utils/errors.py`, called from every blueprint's `except ValidationError` block -- previously each route returned Marshmallow's bare `e.messages` dict directly, with no `"error"` key at all, making it the one response shape in the API that didn't match the rest. Standardizing this was a direct response to instructor feedback asking for more comprehensive, consistent error handling.
-- **Authentication failures** (missing/expired/invalid token) return `401`; an authenticated-but-wrong-customer request returns `403`. See [Authentication](#authentication).
-- **Expected application-level failures** with their own specific messages -- `{"error": "Customer not found."}`, `{"error": "Email already associated with an account."}`, `{"error": "Mechanic is already assigned to this ticket."}`, and so on -- are returned directly by each route's own logic. These never touch the global handlers at all, since they're ordinary return values, not raised exceptions.
+- **HTTP-level errors** (404, 405, 400 malformed JSON, 415, etc.) are caught by a global handler and returned as `{"error": "..."}`.
+- **Unexpected exceptions** are caught, logged server-side, and returned as a generic `{"error": "An unexpected server error occurred."}` with a 500.
+- **Rate limit violations** return `429` with `{"error": "Rate limit exceeded", "detail": "..."}`.
+- **Validation failures** return `400` with `{"error": "Validation failed.", "details": {...}}`, where `details` is Marshmallow's own field-by-field message dict -- built by a single shared helper, `validation_error_response()`, called from every blueprint.
+- **Authentication/authorization failures** return `401` (missing/invalid/expired/wrong-type token) or `403` (valid token, wrong owner or wrong role).
+- **Expected application-level failures** with their own specific messages (`"Customer not found."`, `"Email already associated with an account."`, `"Mechanic is already assigned to this ticket."`, etc.) are returned directly by each route.
 
 ---
 
@@ -307,48 +387,53 @@ Mechanic_project/
   requirements.txt
   config.py                   # DevelopmentConfig (MySQL) / TestingConfig (SQLite)
   run.py                      # entry point: builds real MySQL tables, starts dev server
-  Mechanic_Shop_API.postman_collection.json   # exported Postman requests for every endpoint
+  seed.py                     # wipes + repopulates the database with Faker demo data
+  Mechanic_Shop_API.postman_collection.json
   .github/
     workflows/
-      ci.yml                   # runs pytest + pylint on push/PR
+      ci.yml
   app/
     __init__.py                # app factory (create_app())
     extensions.py               # shared db / ma / limiter / cache instances
     error_handlers.py           # global JSON error handlers
     utils/
       __init__.py
-      util.py                   # encode_token(), token_required decorator
+      util.py                   # encode_token/encode_mechanic_token, token_required,
+                                 # mechanic_token_required, manager_required
       errors.py                 # validation_error_response() -- shared 400 envelope
     models/
       __init__.py
-      customer.py                # includes password_hash (see Authentication)
-      mechanic.py
-      service_ticket.py
-      service_mechanics.py       # service_mechanics junction table
+      customer.py                # includes password_hash
+      mechanic.py                 # includes password_hash, role; salary is Decimal
+      service_ticket.py           # includes status, cost; service_date is Date
+      service_mechanics.py        # junction table
     blueprints/
       __init__.py
       customer/
-        __init__.py               # creates and registers the Customer blueprint
-        routes.py                 # CRUD + login + my-tickets for /customers
+        __init__.py
+        routes.py                 # CRUD + login + my-tickets + pagination
         schemas.py                # CustomerSchema, LoginSchema
       mechanic/
         __init__.py
-        routes.py                 # CRUD routes for /mechanics
-        schemas.py                # MechanicSchema
+        routes.py                 # CRUD + login + sorting endpoints, role-gated
+        schemas.py                # MechanicSchema, LoginSchema, VALID_ROLES
       service_ticket/
         __init__.py
-        routes.py                 # routes for /service-tickets
-        schemas.py                # ServiceTicketSchema (include_fk=True)
+        routes.py                 # CRUD + status/edit/bulk-edit, role-gated
+        schemas.py                # ServiceTicketSchema + 3 supporting schemas,
+                                   # VALID_STATUSES/OPEN_STATUSES/CLOSED_STATUSES
   tests/
     __init__.py
-    conftest.py                 # shared pytest fixtures, payload/login helpers
+    conftest.py                 # fixtures, payload helpers, manager/mechanic bootstrap
     test_customer_model.py
     test_mechanic_model.py
     test_service_ticket_model.py
-    test_customer_routes.py
+    test_customer_routes.py     # includes pagination tests
     test_mechanic_routes.py
+    test_mechanic_auth.py
+    test_mechanic_sorting.py
     test_service_ticket_routes.py
-    test_customer_auth.py       # login, token_required, my-tickets
+    test_customer_auth.py
     test_rate_limiting.py
     test_mechanic_caching.py
     test_error_handlers.py
@@ -358,33 +443,28 @@ Mechanic_project/
 
 ## Architecture Notes
 
+### On the ERD-fidelity principle -- a correction
+
+An earlier version of this README justified matching the class-provided ERD's exact column types (`service_date` as `VARCHAR`, `salary` as `FLOAT`) by claiming these models were "graded against this specific diagram." On review of the actual assignment instructions, **that was never true** -- the assignment specifies required fields, routes, and schemas, but says nothing about strict type fidelity to the diagram. That framing was a design principle introduced along the way, not an instructor requirement, and this README previously stated it inaccurately. Having confirmed that, `service_date` was changed to a real `Date` column and `salary`/`cost` to `Decimal`, both textbook-correct choices this project can now make freely, without conflating a design preference with a grading constraint.
+
 ### Why not a single `app.py`, like the lesson shows?
 
-The lesson's simplest example puts everything — Flask app creation, the database connection string, `db = SQLAlchemy()`, and the models — into one file. This project splits those same responsibilities across several files instead, for two concrete reasons:
-
-1. **Testability.** A single module-level `app = Flask(__name__)` gets created once, permanently wired to the real MySQL database, the moment the file is imported — there's no clean way for a test to get its own separate, disposable app pointed at a fake database instead. Wrapping app creation in a `create_app()` function (the "app factory" pattern) means each test can call `create_app(TestingConfig)` to get a fresh, fully isolated app backed by a fast in-memory database, without ever touching real data.
-
-2. **Maintainability.** Config, the shared `db`/`ma` instances, each model, and each resource's routes/schema all have one clear, single-purpose file or folder.
-
-`run.py` is functionally where the lesson's `app.py` ends up: it calls `create_app()`, runs `db.create_all()` to build the real tables, and starts the dev server.
+Wrapping app creation in `create_app()` (the Application Factory pattern) means each test can get a fresh, fully isolated app backed by an in-memory database, without ever touching real data -- a single module-level `app = Flask(__name__)` gets created once, permanently wired to the real database, the moment the file is imported.
 
 ### Blueprints, one folder per resource
 
-Following the Application Factory Pattern lesson's own file structure, each resource's routes and schema live together in their own folder under `app/blueprints/`, rather than in project-wide `routes/`/`schemas/` folders (an earlier structure this project briefly used). Each blueprint's `__init__.py` creates the `Blueprint` object, then imports its own `routes.py` at the very bottom — after the `Blueprint` already exists — so every `@blueprint.route(...)` decorator in `routes.py` attaches correctly. `routes.py` in turn imports the blueprint back from `__init__.py`. This two-file, bottom-of-file-import pattern is the standard way to structure Flask blueprints without a circular import.
-
-Each blueprint is registered in `app/__init__.py` with a `url_prefix` matching the resource's plural name (`/customers`, `/mechanics`, `/service-tickets`), so the routes inside each `routes.py` only need their path relative to that prefix.
+Each resource's routes and schema live together in their own folder under `app/blueprints/`. Each blueprint's `__init__.py` creates the `Blueprint` object, then imports its own `routes.py` at the very bottom, avoiding a circular import.
 
 ### Provider-style separation
 
-- `app/extensions.py` holds the shared `db`, `ma`, `limiter`, and `cache` objects. It's kept separate from `app/__init__.py` specifically to avoid a circular import: model/schema files need to import `db`/`ma` to define their columns/fields, and the app factory needs to import the models to register their tables.
-- Model files import `service_mechanics.py`'s `service_mechanics` table by string name (`secondary="service_mechanics"`) rather than importing the `Table` object directly, avoiding another circular-import path between `mechanic.py` and `service_ticket.py`.
-- `ServiceTicketSchema` sets `include_fk = True` in its `Meta` class specifically because `SQLAlchemyAutoSchema` excludes foreign key columns by default -- without it, `customer_id` (the field a client needs to send when creating a ticket) would be silently missing from the schema entirely.
-- `cache = Cache()` in `extensions.py` is deliberately created with no config, unlike the lesson's example. Config passed directly to the `Cache()` constructor overrides `app.config`, which would make it impossible for `TestingConfig` to switch caching off -- so the backend (`SimpleCache`, `NullCache`) is set entirely through `config.py` instead.
-- `limiter = Limiter(..., default_limits=[...])` sets its global floor on the constructor rather than passing `app=app` directly, matching the rest of this project's `init_app()`-based wiring: the instance is created without an app in `extensions.py` and bound to the real app later, inside `create_app()`.
-- `get_mechanic` (single-mechanic lookup) uses `@cache.memoize()` instead of `@cache.cached()`. `memoize` keys the cache entry by the function's arguments automatically, so each `mechanic_id` gets its own independent entry -- letting `update_mechanic`/`delete_mechanic` invalidate exactly one mechanic's cached lookup via `cache.delete_memoized(get_mechanic, mechanic_id)` without disturbing any other mechanic's cached data.
-- `SECRET_KEY` signs and verifies JWTs via `current_app.config["SECRET_KEY"]` inside `encode_token()`/`token_required()`, rather than a hardcoded constant -- this guarantees a token can never be encoded with a different key than it's decoded with, and keeps the real key out of source control. `TestingConfig` sets a fixed, non-secret value so the test suite never depends on `.env` existing, which matters for CI, which has no `.env` file at all.
-- `CustomerSchema` excludes `password_hash` entirely (`Meta.exclude`) and adds a non-model `password` field marked `load_only=True` -- accepted on input, hashed by the route, never serialized back into a response even by accident. `LoginSchema` is derived the same way, restricted to just `email` and `password` via `Meta.fields`.
-- Validation-error formatting lives in one place, `app/utils/errors.py`, rather than being repeated in every blueprint's `except ValidationError` block -- so every resource's 400 response is guaranteed to share the same shape, and a future format change only needs to happen once.
+- `app/extensions.py` holds `db`, `ma`, `limiter`, and `cache`, kept separate from `app/__init__.py` to avoid a circular import between model/schema files and the app factory.
+- `app/utils/util.py` holds both token flows and all three access-control decorators, so every blueprint imports from one place rather than duplicating auth logic.
+- **`manager_required`'s inner wrapper parameter is named `requester_id`, not `mechanic_id`** -- several routes it decorates (`update_mechanic`, `delete_mechanic`, `assign_mechanic`, `remove_mechanic`) have a URL parameter _also_ named `mechanic_id`. Flask passes URL parameters as keyword arguments, so if the wrapper's own parameter shared that name, Python would raise "got multiple values for argument" the moment both tried to bind to the same name -- a real bug caught while writing this feature's tests, not merely a style choice.
+- `cache = Cache()` in `extensions.py` is created with no config, so `TestingConfig` can override the backend (`SimpleCache` vs `NullCache`) through `app.config` rather than the constructor overriding it.
+- `limiter = Limiter(..., default_limits=[...])` sets its global floor on the constructor, matching this project's `init_app()`-based wiring elsewhere.
+- `get_mechanic` (single-mechanic lookup) is intentionally _not_ cached, once it also required authentication -- see [Rate Limiting & Caching](#rate-limiting--caching) for the full reasoning.
+- `ServiceTicketSchema`, `MechanicSchema` and friends declare `salary`/`cost` as `fields.Decimal(as_string=True, places=2, ...)` -- `Decimal` values aren't JSON-serializable by Flask's default encoder, so Marshmallow converts them to a fixed-precision string (`"450.00"`) on the way out, while still accepting an int/float/string on the way in.
+- `VALID_ROLES`, `VALID_STATUSES`, `OPEN_STATUSES`, and `CLOSED_STATUSES` are each defined once, in their owning schema module, and imported wherever else they're needed (e.g. the mechanic blueprint imports the status lists to compute open/closed ticket counts) -- so the set of valid values and the routes that depend on it can never drift out of sync.
 
 ---
 
@@ -392,59 +472,59 @@ Each blueprint is registered in `app/__init__.py` with a `url_prefix` matching t
 
 ### Automated tests
 
-Each model has its own test file, written alongside the model as it was built, plus a matching route test file for its HTTP endpoints:
-
-- **`test_customer_model.py`** / **`test_customer_routes.py`** — model-level creation and unique-email enforcement; every `/customers` endpoint including duplicate-email, missing-field, and missing-password rejection, 404s for bad ids, and the auth/ownership rules on update and delete.
-- **`test_customer_auth.py`** — login with valid/invalid/missing credentials (and that the "email not found" and "wrong password" cases return the identical response, so a client can't enumerate registered emails); that a password never appears in any response; `token_required` enforcement (missing, malformed, and invalid tokens) on `GET /customers/my-tickets`; and that `my-tickets` returns only the logged-in customer's own tickets, never another customer's.
-- **`test_mechanic_model.py`** / **`test_mechanic_routes.py`** — model-level creation and the many-to-many relationship to tickets; every `/mechanics` endpoint including the extra-credit get-one route.
-- **`test_service_ticket_model.py`** / **`test_service_ticket_routes.py`** — model-level creation and the many-to-many relationship to mechanics; every `/service-tickets` endpoint including assign/remove-mechanic edge cases (duplicate assignment, removing an unassigned mechanic, ticket/mechanic not found).
-- **`test_rate_limiting.py`** — confirms `POST /customers` and `POST /mechanics` each allow 5 requests per hour then return 429; that `DELETE /customers/<id>` and `DELETE /mechanics/<id>` each allow 10 requests per hour then return 429 (counting even auth failures, since repeated attempts against the same guessed id are exactly what the limit guards against); that rejected requests still count toward a limit; that a limit on one route doesn't block others; that rate-limit headers are present; that the global default limit applies to a route with no route-specific limit of its own; and that the default test config leaves rate limiting off entirely.
-- **`test_mechanic_caching.py`** — confirms `GET /mechanics` and `GET /mechanics/<id>` are both served from cache (a direct database insert or edit the API never saw stays invisible until the cache clears); that caching is off by default in tests; and that create, update, and delete on `/mechanics` each immediately refresh the relevant cache entries, including the single-mechanic cache correctly returning 404 right after a delete.
-- **`test_error_handlers.py`** — confirms unmatched routes, wrong HTTP methods, malformed JSON, and wrong `Content-Type` all return consistent JSON rather than Flask's default HTML error pages.
-
-Tests run against a temporary in-memory SQLite database (via `TestingConfig`), never the real MySQL database — so the suite is fast and never at risk of touching or corrupting real data.
-
 Run the full suite:
 
 ```powershell
 python -m pytest -v
 ```
 
-Currently: **83 tests, all passing.**
+Currently: **120 tests, all passing.**
+
+- **`test_customer_model.py`** / **`test_customer_routes.py`** -- creation, uniqueness, auth/ownership on update/delete, and pagination on the list route.
+- **`test_customer_auth.py`** -- login, password-never-leaked, `my-tickets` token enforcement and scoping.
+- **`test_mechanic_model.py`** / **`test_mechanic_routes.py`** -- creation (manager-only), the salary-visibility rules (own profile vs. anyone's, full roster manager-only), update/delete (manager-only).
+- **`test_mechanic_auth.py`** -- mechanic login, password-never-leaked.
+- **`test_mechanic_sorting.py`** -- most/open/closed-ticket sorting, `?order=asc`, and that the manager's own zero-ticket row participates correctly in ties.
+- **`test_service_ticket_model.py`** / **`test_service_ticket_routes.py`** -- creation (manager-only, requires `cost`), status updates (any mechanic), description/cost edits (manager-only), single-action and bulk mechanic assignment (manager-only, with the bulk route's idempotent-on-redundancy behavior tested explicitly), `my-tickets` scoping.
+- **`test_rate_limiting.py`** -- every route-specific limit, the global default, and that a bootstrapped manager/mechanic doesn't itself count toward any limit.
+- **`test_mechanic_caching.py`** -- `GET /mechanics` cache and invalidation, now manager-authenticated throughout.
+- **`test_error_handlers.py`** -- consistent JSON across every failure mode.
+
+Tests run against a temporary in-memory SQLite database (`TestingConfig`), never the real MySQL database. Since there's no API route to create the first manager account (by design), tests bootstrap one directly via a `seed_manager()`/`create_manager()` helper in `conftest.py`, then log in through the _real_ `/mechanics/login` route -- so even the bootstrapped account is authenticated the normal way, not faked.
 
 ### Testing with Postman
 
-In addition to the automated test suite, every endpoint was also manually verified against the real running app and the real MySQL database, using Postman. The saved requests are exported as `Mechanic_Shop_API.postman_collection.json` in the project root.
-
-To use it:
-
-1. Open Postman.
-2. Click **Import** and select `Mechanic_Shop_API.postman_collection.json`.
-3. Make sure the app is running locally (`python run.py`).
-4. Open the `Mechanic Shop API` collection and send any request — each one is pre-filled with the correct method, URL, and (where needed) a sample JSON body. For protected routes, log in via `POST /customers/login` first and copy the returned `auth_token` into the request's `Authorization` header as `Bearer <token>`.
-
-See [API Endpoints](#api-endpoints) above for the full list covered, and [Authentication](#authentication) for which routes need a token.
+Every endpoint was also manually verified against the real running app and real MySQL database. The collection is exported as `Mechanic_Shop_API.postman_collection.json`. For protected routes, log in first (`POST /customers/login` or `POST /mechanics/login`) and use the returned `auth_token` as `Bearer <token>` in the `Authorization` header -- a Scripts/Tests post-response snippet on each login request can auto-save the token into a collection variable so it doesn't need to be copied by hand for every request.
 
 ---
 
 ## CI
 
-`.github/workflows/ci.yml` runs on every push and pull request to `main`: installs dependencies from `requirements.txt`, runs the full pytest suite, then runs Pylint. Because tests use an in-memory SQLite database rather than a real MySQL connection, this workflow needs no database service or secrets configured at all -- `TestingConfig` sets its own fixed `SECRET_KEY`, so the workflow never needs the real one either.
+`.github/workflows/ci.yml` runs on every push and pull request to `main`: installs dependencies from `requirements.txt`, runs the full pytest suite, then runs Pylint. `TestingConfig` sets its own fixed `SECRET_KEY`, so CI never needs the real one, and needs no database service or secrets configured at all.
 
-This wasn't required by the assignment -- it's carried over from CI/CD coursework on a prior project. Unlike that project, this API isn't deployed anywhere, so there's no CD (deployment) stage here, which is also why this file is named `ci.yml` rather than `main.yml`.
+---
+
+## Future Extensions
+
+Ideas deliberately scoped out of this project, to keep the current redesign focused:
+
+- **A third "owner" tier**, distinct from "manager," if a shop with a single owner and multiple managers needed a further-restricted permission (e.g. only the owner can create new managers).
+- **Software-vendor-level administration** spanning multiple shops (a true multi-tenant SaaS model, with a `Shop` entity and tenant isolation) -- a substantially larger system than a single-shop API, and out of scope here.
+- **Enforced status transitions** (e.g. blocking a jump straight from "Pending" to "Paid") via a real state machine, rather than the current flat, freely-settable `status` field.
 
 ---
 
 ## Submission Checklist
 
 - [x] Blueprints registered for `customer`, `mechanic`, and `service_ticket`, each with its own `url_prefix`
-- [x] Full CRUD implemented for `Customer` and `Mechanic`; `ServiceTicket` create/list/assign-mechanic/remove-mechanic (no update/delete, by design)
+- [x] Full CRUD implemented for `Customer` and `Mechanic`; `ServiceTicket` create/list/status/edit/assign/remove (no full update/delete on the ticket itself, by design)
 - [x] Marshmallow schemas validate and serialize every resource
-- [x] Token authentication: login issues a JWT; `my-tickets`, update, and delete all require a valid token, with update/delete additionally enforcing account ownership
-- [x] Rate limiting: 5/hour on customer/mechanic creation, 10/hour on customer login and customer/mechanic deletion, 200/day + 50/hour global default on every other route
-- [x] Caching: `GET /mechanics` and `GET /mechanics/<id>` cached (60s) with explicit invalidation on create/update/delete
+- [x] Role-based JWT authentication: customer and mechanic login, manager-only vs. any-mechanic route access, ownership checks on customer update/delete
+- [x] Rate limiting and caching, reasoned per route
+- [x] Pagination on `GET /customers`
 - [x] Every error response, including validation failures, shares one consistent `{"error": ...}` envelope
-- [x] Postman collection included in the repo and covers every endpoint
-- [x] 83 automated tests passing (`python -m pytest -v`)
+- [x] `seed.py`: Faker-driven demo data with a documented, predictable local password scheme
+- [x] Postman collection included in the repo and covers every endpoint, including auth and role-rejection cases
+- [x] 120 automated tests passing (`python -m pytest -v`)
 - [x] Pylint clean (`python -m pylint app tests config.py`)
 - [x] CI workflow passing on GitHub Actions

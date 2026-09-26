@@ -4,20 +4,35 @@ Shared pytest fixtures.
 `app` builds a fresh Flask app configured for testing (in-memory
 SQLite, per TestingConfig) and creates every registered model's table
 before yielding control to the test. Tearing tables down after each
-test (rather than reusing one database across the whole test run)
-means tests can never leak state into each other -- one test creating
-a customer can't cause a different test to unexpectedly see it.
+test means tests can never leak state into each other.
 
 TestingConfig switches rate limiting and caching off so the rest of
-the suite is unaffected by them. The two extra fixtures at the bottom
-(`rate_limited_client`, `cached_client`) opt back in to exactly one of
-those features each, for the tests that exercise it.
+the suite is unaffected by them. rate_limited_client/cached_client opt
+back in to exactly one of those features each.
+
+Bootstrapping managers/mechanics: there is no API route to create the
+first manager account (by design -- see Mechanic.role in
+app/models/mechanic.py), so seed_manager() inserts one directly into
+the database, bypassing the API and its password hashing route logic
+(hashing the password itself with the same function the real route
+uses). create_manager()/create_mechanic() build on that to log in
+through the REAL /mechanics/login route afterward, so every test
+still exercises real authentication rather than faking a token. The
+`manager` and `mechanic` fixtures wrap the common single-account case;
+call create_manager()/create_mechanic() directly when a test needs a
+second, distinct account.
 """
 
+from datetime import date
+from decimal import Decimal
+
 import pytest
+from werkzeug.security import generate_password_hash
+
 from app import create_app
 from app.extensions import cache, limiter
 from app.extensions import db as _db
+from app.models.mechanic import Mechanic
 from config import TestingConfig
 
 
@@ -46,11 +61,6 @@ def app():
 
 
 # pylint: disable=redefined-outer-name,unused-argument
-# `app` here is intentionally the same name as the `app` fixture above
-# -- that's how pytest wires fixture dependencies together, not an
-# accidental shadow. It's unused directly in the body because its job
-# is just to guarantee the app/db setup above has already run before
-# this fixture hands back the db object.
 @pytest.fixture
 def db(app):
     """The shared SQLAlchemy db instance, after the app fixture has
@@ -68,12 +78,7 @@ def client(app):
 
 @pytest.fixture
 def rate_limited_client():
-    """A test client for an app with rate limiting ENABLED.
-
-    The limiter is a module-level singleton, so its request counters
-    are reset before and after the test; otherwise requests counted in
-    one test could push the next test over its limit.
-    """
+    """A test client for an app with rate limiting ENABLED."""
     flask_app = create_app(RateLimitedTestConfig)
 
     with flask_app.app_context():
@@ -86,11 +91,7 @@ def rate_limited_client():
 
 @pytest.fixture
 def cached_client():
-    """A test client for an app with a real in-memory cache ENABLED.
-
-    The cache is cleared before and after the test as a safeguard so a
-    cached response can never outlive the test that created it.
-    """
+    """A test client for an app with a real in-memory cache ENABLED."""
     flask_app = create_app(CachedTestConfig)
 
     with flask_app.app_context():
@@ -102,28 +103,67 @@ def cached_client():
 
 
 def make_service_ticket_kwargs(**overrides):
-    """Default field values for constructing a ServiceTicket in
-    tests. Individual tests override only the fields they care about
-    (e.g. `customer=` or `mechanics=`) instead of repeating every
-    field each time -- this is what test_mechanic_model.py and
-    test_service_ticket_model.py both use to build their tickets.
+    """Default field values for constructing a ServiceTicket directly
+    in model-level tests. service_date is a real date object (the
+    column is Date, not a string) and cost is a Decimal (the column
+    is Numeric), matching the model's actual Python types rather than
+    the JSON-friendly strings a route payload would use.
     """
+
     defaults = {
         "vin": "1HGCM82633A004352",
-        "service_date": "2026-01-05",
+        "service_date": date(2026, 1, 5),
         "service_desc": "Brake pad replacement",
+        "cost": Decimal("450.00"),
     }
     defaults.update(overrides)
     return defaults
 
 
+def make_mechanic_kwargs(**overrides):
+    """Default field values for constructing a Mechanic directly in
+    the database (model-level tests, or bootstrapping an account
+    outside the API). password_hash is a placeholder string unless
+    overridden -- these tests don't necessarily need a working login.
+    """
+    defaults = {
+        "name": "Alex Chen",
+        "email": "alex@example.com",
+        "phone": "555-987-6543",
+        "salary": Decimal("55000.00"),
+        "password_hash": "fakehash123",
+        "role": "mechanic",
+    }
+    defaults.update(overrides)
+    return defaults
+
+
+def make_mechanic_payload(index=None, **overrides):
+    """Default JSON body for creating/updating a mechanic via the
+    API. Pass index for a unique name/email. role defaults to
+    "mechanic"."""
+    if index is None:
+        name = "Alex Chen"
+        email = "alex@example.com"
+    else:
+        name = f"Mechanic {index}"
+        email = f"mechanic{index}@example.com"
+
+    payload = {
+        "name": name,
+        "email": email,
+        "phone": "555-987-6543",
+        "salary": 55000.00,
+        "password": "wrench123",
+        "role": "mechanic",
+    }
+    payload.update(overrides)
+    return payload
+
+
 def make_customer_kwargs(**overrides):
     """Default field values for constructing a Customer directly in
-    model-level tests (as opposed to make_customer_payload, which
-    builds a POST/PUT request body). password_hash uses a placeholder
-    string rather than a real hash -- these tests only need the
-    NOT NULL constraint satisfied, never a working login.
-    """
+    the database, for model-level tests."""
     defaults = {
         "name": "Jamie Rivera",
         "email": "jamie@example.com",
@@ -134,25 +174,8 @@ def make_customer_kwargs(**overrides):
     return defaults
 
 
-def make_mechanic_payload(**overrides):
-    """Default JSON body for creating/updating a mechanic in route
-    tests, following the same pattern as make_customer_payload."""
-    payload = {
-        "name": "Alex Chen",
-        "email": "alex@example.com",
-        "phone": "555-987-6543",
-        "salary": 55000.00,
-    }
-    payload.update(overrides)
-    return payload
-
-
 def make_customer_payload(index=None, **overrides):
-    """Default JSON body for creating/updating a customer in route
-    tests. Pass `index` to get a unique name/email -- used by the
-    rate-limiting tests, which create several customers in a row and
-    would otherwise trip the duplicate-email check on the second one.
-    """
+    """Default JSON body for creating/updating a customer via the API."""
     if index is None:
         name = "Jamie Rivera"
         email = "jamie@example.com"
@@ -172,14 +195,7 @@ def make_customer_payload(index=None, **overrides):
 
 def login_customer(client, **overrides):  # pylint: disable=redefined-outer-name
     """Create a customer via the API, log them in, and return
-    (customer_id, auth_headers) -- the auth_headers dict is ready to
-    pass straight to client.get/put/delete(..., headers=auth_headers)
-    for any test that needs a valid token.
-
-    `client` here is a parameter, not the `client` fixture above --
-    every test that calls this passes its own `client` fixture in
-    explicitly, since fixtures can't be requested by a plain function.
-    """
+    (customer_id, auth_headers)."""
     payload = make_customer_payload(**overrides)
     created = client.post("/customers", json=payload).json
     login_response = client.post(
@@ -188,3 +204,71 @@ def login_customer(client, **overrides):  # pylint: disable=redefined-outer-name
     )
     token = login_response.json["auth_token"]
     return created["id"], {"Authorization": f"Bearer {token}"}
+
+
+def seed_manager(db, **overrides):  # pylint: disable=redefined-outer-name
+    """Insert a manager account directly into the database, bypassing
+    the API -- there is no API route to create the first manager, by
+    design (see Mechanic.role in app/models/mechanic.py). Returns
+    (manager, plaintext_password) so the caller can log in through
+    the real API afterward.
+
+    Defaults to a distinct identity (name/email) from
+    make_mechanic_payload()'s default -- otherwise a test that seeds
+    a manager and then creates a mechanic via the API with no
+    overrides would collide on email and fail with a 400, since both
+    would default to the same "Alex Chen" identity.
+    """
+    password = overrides.pop("password", "bosspass1")
+    kwargs = make_mechanic_kwargs(
+        name="Morgan Lee",
+        email="manager@example.com",
+        role="manager",
+        **overrides,
+    )
+    kwargs["password_hash"] = generate_password_hash(password)
+    manager = Mechanic(**kwargs)
+    db.session.add(manager)
+    db.session.commit()
+    return manager, password
+
+
+def create_manager(client, db, **overrides):  # pylint: disable=redefined-outer-name
+    """Bootstrap a manager account (seed_manager) and log them in
+    through the real API. Returns (manager_id, auth_headers)."""
+    manager_obj, password = seed_manager(db, **overrides)
+    login_response = client.post(
+        "/mechanics/login",
+        json={"email": manager_obj.email, "password": password},
+    )
+    token = login_response.json["auth_token"]
+    return manager_obj.id, {"Authorization": f"Bearer {token}"}
+
+
+def create_mechanic(client, manager_headers, **overrides):
+    """Create a regular mechanic through the real API (requires a
+    manager token, since mechanic creation is manager-only), then log
+    them in. Returns (mechanic_id, auth_headers)."""
+    payload = make_mechanic_payload(**overrides)
+    created = client.post("/mechanics", json=payload, headers=manager_headers).json
+    login_response = client.post(
+        "/mechanics/login",
+        json={"email": payload["email"], "password": payload["password"]},
+    )
+    token = login_response.json["auth_token"]
+    return created["id"], {"Authorization": f"Bearer {token}"}
+
+
+@pytest.fixture
+def manager(client, db):  # pylint: disable=redefined-outer-name
+    """A manager account and its auth headers, ready to use.
+    Yields (manager_id, auth_headers)."""
+    return create_manager(client, db)
+
+
+@pytest.fixture
+def mechanic(client, manager):  # pylint: disable=redefined-outer-name
+    """A regular mechanic account and its auth headers, created via
+    the manager fixture's token. Yields (mechanic_id, auth_headers)."""
+    _, manager_headers = manager
+    return create_mechanic(client, manager_headers)

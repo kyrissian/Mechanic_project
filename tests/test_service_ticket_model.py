@@ -1,14 +1,20 @@
 """Tests for the ServiceTicket model, including its relationship to
 Customer and its many-to-many relationship with Mechanic."""
 
+from decimal import Decimal
+
 from app.models.customer import Customer
 from app.models.mechanic import Mechanic
 from app.models.service_ticket import ServiceTicket
-from tests.conftest import make_customer_kwargs, make_service_ticket_kwargs
+from tests.conftest import (
+    make_customer_kwargs,
+    make_mechanic_kwargs,
+    make_service_ticket_kwargs,
+)
 
 
 def test_create_service_ticket_linked_to_customer(db):
-    """A ServiceTicket should save with its VIN/date/description
+    """A ServiceTicket should save with its VIN/date/description/cost
     intact, and be linked back to the customer that owns it."""
     customer = Customer(**make_customer_kwargs())
     db.session.add(customer)
@@ -23,6 +29,7 @@ def test_create_service_ticket_linked_to_customer(db):
     assert saved is not None
     assert saved.vin == "1HGCM82633A004352"
     assert saved.service_desc == "Brake pad replacement"
+    assert saved.cost == Decimal("450.00")
     assert saved.customer.id == customer.id
     assert saved.customer.name == "Jamie Rivera"
 
@@ -32,11 +39,9 @@ def test_service_ticket_can_have_multiple_mechanics(db):
     mechanic -- the other direction of the same many-to-many
     relationship tested in test_mechanic_model.py."""
     customer = Customer(**make_customer_kwargs())
-    mechanic_one = Mechanic(
-        name="Alex Chen", email="alex@example.com", phone="555-987-6543", salary=55000.00
-    )
+    mechanic_one = Mechanic(**make_mechanic_kwargs())
     mechanic_two = Mechanic(
-        name="Sam Diaz", email="sam@example.com", phone="555-222-3333", salary=58000.00
+        **make_mechanic_kwargs(name="Sam Diaz", email="sam@example.com")
     )
 
     ticket = ServiceTicket(customer=customer, **make_service_ticket_kwargs())
