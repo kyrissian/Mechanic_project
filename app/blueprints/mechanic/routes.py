@@ -56,11 +56,6 @@ from app.utils.errors import validation_error_response
 from app.utils.pagination import paginate_query
 from app.utils.util import encode_mechanic_token, manager_required, mechanic_token_required
 
-# Cache key prefix for GET /mechanics. Actual invalidation uses
-# cache.clear() (see module docstring), so this is only used by the
-# @cache.cached decorator itself now.
-MECHANICS_CACHE_KEY = "all_mechanics"
-
 
 @mechanic_bp.route("", methods=["POST"])
 @limiter.limit("5 per hour")
@@ -122,7 +117,7 @@ def login():
 
 @mechanic_bp.route("", methods=["GET"])
 @manager_required
-@cache.cached(timeout=60, key_prefix=MECHANICS_CACHE_KEY)
+@cache.cached(timeout=60, query_string=True)
 def get_mechanics(_manager_id):
     """Retrieve every mechanic, including salary, paginated.
     Manager-only: a regular mechanic has no legitimate reason to see
@@ -133,9 +128,11 @@ def get_mechanics(_manager_id):
     the same way as GET /customers' pagination -- see
     app/utils/pagination.py.
 
-    Cached for 60 seconds (see module docstring for why auth must be
-    the outer decorator on a cached route, and why writes below use
-    cache.clear() rather than deleting a single key).
+    Cached for 60 seconds. query_string=True keeps each
+    page/page_size combination in its own cache entry. (See module
+    docstring for why auth must be the outer decorator on a cached
+    route, and why writes below use cache.clear() rather than
+    deleting a single key.)
     """
     result = paginate_query(
         select(Mechanic), Mechanic.id, mechanics_schema, "mechanics", size_limits=(5, 25)

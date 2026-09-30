@@ -135,3 +135,22 @@ def test_different_pages_both_invalidate_on_write(cached_client):
 
     page_two = cached_client.get("/mechanics?page=2&page_size=2", headers=headers).json
     assert page_two["total"] == 5  # manager + 4 mechanics, not the stale 4
+
+
+def test_cache_distinguishes_paginated_query_strings(cached_client):
+    """Caching must vary by query string, so page 1 and page 2 are
+    never served from the same cache entry."""
+    headers = _manager_headers(cached_client)
+    for i in range(3):
+        cached_client.post(
+            "/mechanics", json=make_mechanic_payload(index=i), headers=headers
+        )
+
+    page_one = cached_client.get("/mechanics?page=1&page_size=2", headers=headers).json
+    page_two = cached_client.get("/mechanics?page=2&page_size=2", headers=headers).json
+
+    assert page_one["page"] == 1
+    assert page_two["page"] == 2
+    assert [m["id"] for m in page_one["mechanics"]] != [
+        m["id"] for m in page_two["mechanics"]
+    ]
