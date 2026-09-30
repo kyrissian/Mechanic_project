@@ -96,14 +96,16 @@ def test_my_tickets_rejects_malformed_authorization_header(client):
 
 
 def test_my_tickets_empty_list_when_no_tickets(client):
-    """GET /customers/my-tickets should return an empty list for a
-    logged-in customer who has no service tickets yet."""
+    """GET /customers/my-tickets should return an empty tickets list
+    (inside the pagination envelope) for a logged-in customer who has
+    no service tickets yet."""
     _, headers = login_customer(client)
 
     response = client.get("/customers/my-tickets", headers=headers)
 
     assert response.status_code == 200
-    assert response.json == []
+    assert response.json["tickets"] == []
+    assert response.json["total"] == 0
 
 
 def test_my_tickets_returns_only_own_tickets(client, db):
@@ -127,5 +129,28 @@ def test_my_tickets_returns_only_own_tickets(client, db):
     response = client.get("/customers/my-tickets", headers=headers)
 
     assert response.status_code == 200
-    assert len(response.json) == 1
-    assert response.json[0]["service_desc"] == "Oil change"
+    assert response.json["total"] == 1
+    assert response.json["tickets"][0]["service_desc"] == "Oil change"
+
+
+def test_my_tickets_paginates(client, db):
+    """A customer with more than page_size tickets sees them split
+    across pages, in a stable order."""
+    customer_id, headers = login_customer(client)
+    for i in range(3):
+        db.session.add(ServiceTicket(
+            customer_id=customer_id,
+            **make_service_ticket_kwargs(
+                vin=f"2T1BURHE0JC01467{i}", service_desc=f"Job {i}"
+            ),
+        ))
+    db.session.commit()
+
+    first_page = client.get("/customers/my-tickets", headers=headers)
+    second_page = client.get("/customers/my-tickets?page=2", headers=headers)
+
+    assert first_page.status_code == 200
+    assert len(first_page.json["tickets"]) == 2
+    assert first_page.json["total"] == 3
+    assert first_page.json["total_pages"] == 2
+    assert len(second_page.json["tickets"]) == 1

@@ -1,7 +1,5 @@
-"""Tests for caching on GET /mechanics (manager-only) and its
-invalidation on writes. GET /mechanics/<id> is no longer cached (see
-app/blueprints/mechanic/routes.py's module docstring for why), so
-there's nothing to test for it here."""
+"""Tests for caching on GET /mechanics (manager-only, paginated) and
+its invalidation on writes."""
 
 from werkzeug.security import generate_password_hash
 
@@ -44,49 +42,40 @@ def test_get_mechanics_is_served_from_cache(cached_client):
     appear in GET /mechanics until the cache is cleared or expires."""
     headers = _manager_headers(cached_client)
     first = cached_client.get("/mechanics", headers=headers).json
-    assert len(first) == 1  # just the bootstrapped manager
+    assert first["total"] == 1  # just the bootstrapped manager
 
     insert_mechanic_directly()
 
     second = cached_client.get("/mechanics", headers=headers).json
-    assert len(second) == 1  # still cached; direct insert is invisible
+    assert second["total"] == 1  # still cached; direct insert is invisible
 
 
 def test_get_mechanics_is_not_cached_when_caching_disabled(client, manager):
     """Control for the test above: with the default (NullCache) test
     config, the same kind of direct insert IS visible immediately."""
     _, manager_headers = manager
-    assert len(client.get("/mechanics", headers=manager_headers).json) == 1
+    assert client.get("/mechanics", headers=manager_headers).json["total"] == 1
 
-    _db.session.add(
-        Mechanic(
-            name="Sam Diaz",
-            email="sam@example.com",
-            phone="555-222-3333",
-            salary=58000.00,
-            role="mechanic",
-            password_hash=generate_password_hash("wrench123"),
-        )
-    )
-    _db.session.commit()
+    insert_mechanic_directly()
 
-    assert len(client.get("/mechanics", headers=manager_headers).json) == 2
+    assert client.get("/mechanics", headers=manager_headers).json["total"] == 2
 
 
 def test_create_mechanic_refreshes_cached_list(cached_client):
-    """Creating a mechanic clears the cached list, so the new mechanic
-    shows up immediately rather than after the timeout."""
+    """Creating a mechanic clears the ENTIRE cache (cache.clear()),
+    so the new mechanic shows up immediately rather than after the
+    timeout, on every cached page."""
     headers = _manager_headers(cached_client)
-    assert len(cached_client.get("/mechanics", headers=headers).json) == 1
+    assert cached_client.get("/mechanics", headers=headers).json["total"] == 1
 
     cached_client.post("/mechanics", json=make_mechanic_payload(), headers=headers)
 
-    assert len(cached_client.get("/mechanics", headers=headers).json) == 2
+    assert cached_client.get("/mechanics", headers=headers).json["total"] == 2
 
 
 def test_update_mechanic_refreshes_cached_list(cached_client):
-    """Updating a mechanic clears the cached list, so the list shows
-    the new values immediately."""
+    """Updating a mechanic clears the cache, so the list shows the
+    new values immediately."""
     headers = _manager_headers(cached_client)
     created = cached_client.post(
         "/mechanics", json=make_mechanic_payload(), headers=headers
@@ -94,7 +83,7 @@ def test_update_mechanic_refreshes_cached_list(cached_client):
     mechanic_id = created["id"]
 
     listing = cached_client.get("/mechanics", headers=headers).json
-    entry = next(m for m in listing if m["id"] == mechanic_id)
+    entry = next(m for m in listing["mechanics"] if m["id"] == mechanic_id)
     assert entry["salary"] == "55000.00"
 
     cached_client.put(
@@ -104,13 +93,13 @@ def test_update_mechanic_refreshes_cached_list(cached_client):
     )
 
     listing = cached_client.get("/mechanics", headers=headers).json
-    entry = next(m for m in listing if m["id"] == mechanic_id)
+    entry = next(m for m in listing["mechanics"] if m["id"] == mechanic_id)
     assert entry["salary"] == "60000.00"
 
 
 def test_delete_mechanic_refreshes_cached_list(cached_client):
-    """Deleting a mechanic clears the cached list, so the deleted
-    mechanic disappears from it immediately."""
+    """Deleting a mechanic clears the cache, so the deleted mechanic
+    disappears from it immediately."""
     headers = _manager_headers(cached_client)
     created = cached_client.post(
         "/mechanics", json=make_mechanic_payload(), headers=headers
@@ -118,9 +107,31 @@ def test_delete_mechanic_refreshes_cached_list(cached_client):
     mechanic_id = created["id"]
 
     listing = cached_client.get("/mechanics", headers=headers).json
-    assert any(m["id"] == mechanic_id for m in listing)
+    assert any(m["id"] == mechanic_id for m in listing["mechanics"])
 
     cached_client.delete(f"/mechanics/{mechanic_id}", headers=headers)
 
     listing = cached_client.get("/mechanics", headers=headers).json
-    assert not any(m["id"] == mechanic_id for m in listing)
+    assert not any(m["id"] == mechanic_id for m in listing["mechanics"])
+
+
+def test_different_pages_both_invalidate_on_write(cached_client):
+    """A write must invalidate every cached page, not just page 1 --
+    this is the bug cache.clear() (instead of a single-key delete)
+    exists to prevent."""
+    headers = _manager_headers(cached_client)
+    for i in range(3):
+        cached_client.post(
+            "/mechanics", json=make_mechanic_payload(index=i), headers=headers
+        )
+
+    # Prime BOTH pages into the cache.
+    cached_client.get("/mechanics?page=1&page_size=2", headers=headers)
+    cached_client.get("/mechanics?page=2&page_size=2", headers=headers)
+
+    cached_client.post(
+        "/mechanics", json=make_mechanic_payload(index=99), headers=headers
+    )
+
+    page_two = cached_client.get("/mechanics?page=2&page_size=2", headers=headers).json
+    assert page_two["total"] == 5  # manager + 4 mechanics, not the stale 4

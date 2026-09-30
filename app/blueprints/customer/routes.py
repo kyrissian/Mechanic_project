@@ -8,9 +8,21 @@ GET /customers (all), GET /customers/<id> (one), POST /customers
 
 POST /customers/login exchanges email/password for a JWT (see
 app/utils/util.py). GET /customers/my-tickets and both PUT/DELETE
-require that token via @token_required, and the update/delete routes
-additionally check the token's customer_id against the id in the URL,
-so a customer can only ever modify or delete their own account.
+require a customer token via @token_required, and the update/delete
+routes additionally check the token's customer_id against the id in
+the URL, so a customer can only ever modify or close their own
+account. GET /customers and GET /customers/<id> require a MECHANIC
+token instead (any role) -- customer records contain personal data,
+so browsing or looking up other customers is staff-only, not public.
+
+DELETE closes the account rather than erasing it, and only for a
+customer with no service history. Personal details are scrubbed and
+deleted_at is set, but the row stays. A customer who has ever had a
+ticket cannot close their account online (409): the ticket is the
+shop's business record, and letting the customer scrub the identity
+attached to it would defeat its purpose. Closed accounts are hidden
+from the list and single-customer lookups, can't log in, and their
+tokens stop working (token_required checks).
 
 Customer creation, deletion, and login are all rate limited (see each
 function's docstring). Every route in the app also carries a global
@@ -19,6 +31,9 @@ extensions.py. Customer reads are intentionally not cached: they
 contain personal data and change whenever a customer is created,
 updated, or deleted.
 """
+
+import secrets
+from datetime import datetime, timezone
 
 from flask import request, jsonify
 from marshmallow import ValidationError
@@ -32,7 +47,8 @@ from app.blueprints.customer import customer_bp
 from app.blueprints.customer.schemas import customer_schema, customers_schema, login_schema
 from app.blueprints.service_ticket.schemas import service_tickets_schema
 from app.utils.errors import validation_error_response
-from app.utils.util import encode_token, token_required
+from app.utils.pagination import paginate_query
+from app.utils.util import encode_token, mechanic_token_required, token_required
 
 
 @customer_bp.route("", methods=["POST"])
@@ -74,14 +90,17 @@ def login():
     Rate limited to 10 requests per hour per client IP. Login is a
     classic brute-force target -- without a limit, a script could try
     thousands of password guesses against one email address. Both
-    failed and successful attempts count toward the limit.
+    failed and successful attempts count toward the limit. Closed
+    accounts are excluded from the lookup, so they can never log in.
     """
     try:
         credentials = login_schema.load(request.json)
     except ValidationError as e:
         return validation_error_response(e)
 
-    query = select(Customer).where(Customer.email == credentials["email"])
+    query = select(Customer).where(
+        Customer.email == credentials["email"], Customer.deleted_at.is_(None)
+    )
     customer = db.session.execute(query).scalars().first()
 
     if customer and check_password_hash(customer.password_hash, credentials["password"]):
@@ -95,51 +114,34 @@ def login():
 
 
 @customer_bp.route("", methods=["GET"])
-def get_customers():
-    """Retrieve customers, paginated.
+@mechanic_token_required
+def get_customers(_mechanic_id, _role):
+    """Retrieve active customers, paginated. Requires being logged in
+    as any mechanic -- customer records are personal data, not public.
 
     ?page (default 1) and ?page_size (default 7, capped at 50) control
-    which slice is returned. Invalid or missing values fall back to
-    the defaults rather than erroring -- a malformed query param
-    shouldn't break an otherwise valid request. A page past the last
-    real page returns an empty customers list rather than a 404;
-    there's nothing wrong with the request, there's just no data
-    there.
+    which slice is returned -- see app/utils/pagination.py. A page
+    past the last real page returns an empty customers list rather
+    than a 404; there's nothing wrong with the request, there's just
+    no data there. Closed accounts are excluded from both the results
+    and the total. Results are ordered by id so pages never overlap
+    or skip.
     """
-    try:
-        page = int(request.args.get("page", 1))
-    except ValueError:
-        page = 1
-    page = max(page, 1)
-
-    try:
-        page_size = int(request.args.get("page_size", 7))
-    except ValueError:
-        page_size = 7
-    page_size = max(1, min(page_size, 50))
-
-    query = select(Customer)
-    total = db.session.execute(
-        select(db.func.count()).select_from(query.subquery())
-    ).scalar()
-
-    paginated_query = query.offset((page - 1) * page_size).limit(page_size)
-    customers = db.session.execute(paginated_query).scalars().all()
-
-    return jsonify({
-        "customers": customers_schema.dump(customers),
-        "total": total,
-        "page": page,
-        "page_size": page_size,
-        "total_pages": (total + page_size - 1) // page_size if total else 0,
-    }), 200
+    query = select(Customer).where(Customer.deleted_at.is_(None))
+    result = paginate_query(
+        query, Customer.id, customers_schema, "customers", size_limits=(7, 50)
+    )
+    return jsonify(result), 200
 
 
 @customer_bp.route("/<int:customer_id>", methods=["GET"])
-def get_customer(customer_id):
-    """Retrieve a single customer by id."""
+@mechanic_token_required
+def get_customer(_mechanic_id, _role, customer_id):
+    """Retrieve a single active customer by id. Requires being
+    logged in as any mechanic, same reasoning as get_customers. A
+    closed account is reported as not found."""
     customer = db.session.get(Customer, customer_id)
-    if customer:
+    if customer and customer.is_active:
         return customer_schema.jsonify(customer), 200
     return jsonify({"error": "Customer not found."}), 404
 
@@ -147,15 +149,25 @@ def get_customer(customer_id):
 @customer_bp.route("/my-tickets", methods=["GET"])
 @token_required
 def get_my_tickets(customer_id):
-    """Retrieve every service ticket belonging to the logged-in customer.
+    """Retrieve service tickets belonging to the logged-in customer,
+    paginated.
 
     customer_id comes from the validated token via @token_required,
     never from the URL or request body -- a customer can only ever see
     their own tickets, with no id to tamper with in the first place.
+
+    ?page (default 1) and ?page_size (default 2, capped at 20) work
+    the same way as GET /customers' pagination -- see
+    app/utils/pagination.py. The small default is deliberate: each
+    ticket now carries its status, cost, assigned mechanics, and a
+    parts list with quantities and line totals, so even a handful of
+    tickets is a heavier payload than it looks.
     """
     query = select(ServiceTicket).where(ServiceTicket.customer_id == customer_id)
-    tickets = db.session.execute(query).scalars().all()
-    return service_tickets_schema.jsonify(tickets)
+    result = paginate_query(
+        query, ServiceTicket.id, service_tickets_schema, "tickets", size_limits=(2, 20)
+    )
+    return jsonify(result), 200
 
 
 @customer_bp.route("/<int:customer_id>", methods=["PUT"])
@@ -173,7 +185,7 @@ def update_customer(token_customer_id, customer_id):
         return jsonify({"error": "You may only update your own account."}), 403
 
     customer = db.session.get(Customer, customer_id)
-    if not customer:
+    if not customer or not customer.is_active:
         return jsonify({"error": "Customer not found."}), 404
 
     try:
@@ -205,24 +217,66 @@ def update_customer(token_customer_id, customer_id):
 @limiter.limit("10 per hour")
 @token_required
 def delete_customer(token_customer_id, customer_id):
-    """Delete a customer by id.
+    """Close a customer's account, but only if they have no service
+    history. Requires a valid token matching the id being closed, for
+    the same reason as update_customer. Still rate limited to 10
+    requests per hour per client IP.
 
-    Requires a valid token matching the id being deleted, for the same
-    reason as update_customer -- without it, any logged-in customer
-    could delete any other customer's account. Still rate limited to
-    10 requests per hour per client IP on top of that, since deletion
-    is destructive regardless of whose account it targets.
+    A customer with ANY ticket, in any status, gets a 409: tickets are
+    the shop's business records (revenue, warranty, liability), and
+    letting the customer scrub the identity attached to them would
+    make those records untraceable. Shops normally keep such records
+    for a legally required period, so closing an account with history
+    is a matter for staff, not a self-service action.
+
+    For a customer with no tickets this is a soft delete with
+    anonymization: name, email, and phone are replaced with
+    placeholders, and the password hash is replaced with a random
+    hash nobody knows. The placeholder email is unique per id (email
+    must stay unique) and uses the reserved .invalid domain, so it can
+    never receive mail and never collides with a real address -- which
+    also frees the original email to be registered again.
     """
     if token_customer_id != customer_id:
         return jsonify({"error": "You may only delete your own account."}), 403
 
     customer = db.session.get(Customer, customer_id)
-    if not customer:
+    if not customer or not customer.is_active:
         return jsonify({"error": "Customer not found."}), 404
 
-    db.session.delete(customer)
+    has_history = db.session.execute(
+        select(ServiceTicket.id).where(ServiceTicket.customer_id == customer_id).limit(1)
+    ).first()
+    if has_history:
+        return (
+            jsonify(
+                {
+                    "error": (
+                        "Accounts with service history can't be deleted online. "
+                        "Please contact the shop."
+                    )
+                }
+            ),
+            409,
+        )
+
+    customer.name = "Deleted Customer"
+    customer.email = f"deleted-{customer.id}@deleted.invalid"
+    customer.phone = "N/A"
+    customer.password_hash = generate_password_hash(secrets.token_urlsafe(32))
+    # Stored as naive UTC: the column has no timezone, and MySQL's
+    # DATETIME doesn't keep one either.
+    customer.deleted_at = datetime.now(timezone.utc).replace(tzinfo=None)
+
     db.session.commit()
     return (
-        jsonify({"message": f"Customer id: {customer_id}, successfully deleted."}),
+        jsonify(
+            {
+                "message": (
+                    f"Customer id: {customer_id}, account closed. "
+                    "Personal details removed."
+                )
+            }
+        ),
         200,
     )

@@ -1,7 +1,7 @@
 """Tests for mechanic login."""
 
 from app.extensions import db as _db
-from tests.conftest import make_mechanic_payload, seed_manager
+from tests.conftest import create_mechanic, make_mechanic_payload, seed_manager
 
 
 def test_login_returns_token_for_valid_credentials(client, db):
@@ -63,3 +63,44 @@ def test_password_is_never_returned_in_responses(client, manager):
 
     assert "password" not in response.json
     assert "password_hash" not in response.json
+
+
+def test_deleted_mechanic_token_stops_working(client, manager):
+    """A mechanic's token, once issued, must stop working the moment
+    their account is deleted -- not just at its own 1-hour expiry."""
+    _, manager_headers = manager
+
+    mechanic_id, mechanic_headers = create_mechanic(client, manager_headers)
+    client.delete(f"/mechanics/{mechanic_id}", headers=manager_headers)
+
+    response = client.get("/inventory", headers=mechanic_headers)
+
+    assert response.status_code == 401
+
+
+def test_mechanic_role_change_takes_effect_without_relogin(client, manager):
+    """Promoting a mechanic to manager mid-session must grant them
+    manager access on their very next request -- role is read fresh
+    from the database, not trusted from the (now-stale) token."""
+    _, manager_headers = manager
+
+    mechanic_id, mechanic_headers = create_mechanic(client, manager_headers)
+
+    # Confirm they start without manager access.
+    denied = client.post(
+        "/mechanics", json=make_mechanic_payload(index=99), headers=mechanic_headers
+    )
+    assert denied.status_code == 403
+
+    client.put(
+        f"/mechanics/{mechanic_id}",
+        json=make_mechanic_payload(role="manager"),
+        headers=manager_headers,
+    )
+
+    # Same OLD token, never re-issued -- should now succeed.
+    response = client.post(
+        "/mechanics", json=make_mechanic_payload(index=100), headers=mechanic_headers
+    )
+
+    assert response.status_code == 201

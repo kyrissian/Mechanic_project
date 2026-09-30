@@ -17,27 +17,25 @@ any logged-in mechanic, but deliberately exclude salary from their
 response (see _mechanic_summary), since sorting by workload doesn't
 require seeing anyone's pay.
 
-Caching: the mechanic-list cache (get_mechanics) is unchanged, but
-the single-mechanic cache has been removed entirely. @cache.memoize
-keys its cache entries by the decorated function's actual arguments --
-once get_mechanic also received the *requesting* mechanic's id and
-role from mechanic_token_required, every different requester would
-get their own separate cache entry for the same target mechanic, and
-cache.delete_memoized() (used by update/delete to invalidate) could
-no longer reliably clear them all, since it can't know every
-requesting id/role combination that might have cached a given
-target. Given this route is now authenticated internal traffic
-rather than public, high-volume traffic, the caching benefit no
-longer outweighed that complexity.
+Caching: get_mechanics is the one cached route in this app. Each
+page/page_size combination is cached under its own key, since
+Flask-Caching keys by the full request path -- so create_mechanic,
+update_mechanic, and delete_mechanic all call cache.clear() rather
+than deleting a single key, guaranteeing every cached page is
+invalidated on any write, not just page 1. This is safe specifically
+because GET /mechanics is the only cached route anywhere in the app;
+if a second cached route were ever added, this would need to become
+more targeted. The single-mechanic lookup (get_mechanic) is NOT
+cached at all -- see that function's docstring for why.
 
 Decorator order also matters for correctness, not just cleanliness:
-authentication must run BEFORE caching on every cached route
-(get_mechanics below). Flask-Caching's cache key is based on the
-request path, not on who's asking -- if caching ran first, a cached
-response computed for one authenticated request could be served to a
-LATER, completely unauthenticated request hitting the same path.
-Putting @manager_required above @cache.cached guarantees every
-request re-checks the token before the cache is ever consulted.
+authentication must run BEFORE caching on get_mechanics. Flask-
+Caching's cache key is based on the request path, not on who's
+asking -- if caching ran first, a cached response computed for one
+authenticated request could be served to a LATER, completely
+unauthenticated request hitting the same path. Putting
+@manager_required above @cache.cached guarantees every request
+re-checks the token before the cache is ever consulted.
 """
 
 from flask import request, jsonify
@@ -55,11 +53,12 @@ from app.blueprints.mechanic.schemas import (
 )
 from app.blueprints.service_ticket.schemas import CLOSED_STATUSES, OPEN_STATUSES
 from app.utils.errors import validation_error_response
+from app.utils.pagination import paginate_query
 from app.utils.util import encode_mechanic_token, manager_required, mechanic_token_required
 
-# Single source of truth for the list-cache key, shared by the
-# @cache.cached decorator and every cache.delete() call below. If the
-# two ever drifted apart, invalidation would silently stop working.
+# Cache key prefix for GET /mechanics. Actual invalidation uses
+# cache.clear() (see module docstring), so this is only used by the
+# @cache.cached decorator itself now.
 MECHANICS_CACHE_KEY = "all_mechanics"
 
 
@@ -92,7 +91,7 @@ def create_mechanic(_manager_id):
     )
     db.session.add(new_mechanic)
     db.session.commit()
-    cache.delete(MECHANICS_CACHE_KEY)  # roster changed; drop the cached list
+    cache.clear()  # roster changed; every cached page is now stale
     return mechanic_schema.jsonify(new_mechanic), 201
 
 
@@ -125,17 +124,23 @@ def login():
 @manager_required
 @cache.cached(timeout=60, key_prefix=MECHANICS_CACHE_KEY)
 def get_mechanics(_manager_id):
-    """Retrieve every mechanic, including salary. Manager-only: a
-    regular mechanic has no legitimate reason to see every other
-    mechanic's pay -- only a manager, who already sets salaries via
-    update_mechanic, needs this view.
+    """Retrieve every mechanic, including salary, paginated.
+    Manager-only: a regular mechanic has no legitimate reason to see
+    every other mechanic's pay -- only a manager, who already sets
+    salaries via update_mechanic, needs this view.
+
+    ?page (default 1) and ?page_size (default 5, capped at 25) work
+    the same way as GET /customers' pagination -- see
+    app/utils/pagination.py.
 
     Cached for 60 seconds (see module docstring for why auth must be
-    the outer decorator on a cached route).
+    the outer decorator on a cached route, and why writes below use
+    cache.clear() rather than deleting a single key).
     """
-    query = select(Mechanic)
-    mechanics = db.session.execute(query).scalars().all()
-    return mechanics_schema.jsonify(mechanics)
+    result = paginate_query(
+        select(Mechanic), Mechanic.id, mechanics_schema, "mechanics", size_limits=(5, 25)
+    )
+    return jsonify(result), 200
 
 
 def _mechanic_summary(mechanic, **extra_fields):
@@ -246,7 +251,17 @@ def get_mechanic(requesting_id, role, mechanic_id):
     A manager may look up any mechanic. A regular mechanic may only
     look up their OWN profile -- checked before the database is even
     queried, so a mechanic can't use this to probe another mechanic's
-    salary or account details. No longer cached (see module docstring).
+    salary or account details.
+
+    Not cached: @cache.memoize keys its cache entries by the
+    decorated function's actual arguments, which now include the
+    REQUESTING mechanic's id and role (from mechanic_token_required).
+    That means every different requester would get their own separate
+    cache entry for the same target mechanic, and cache.delete_memoized
+    (used to invalidate on update/delete) could no longer reliably
+    clear them all. Given this route is now authenticated internal
+    traffic rather than public, high-volume traffic, the caching
+    benefit no longer outweighed that complexity.
     """
     if role != "manager" and requesting_id != mechanic_id:
         return jsonify({"error": "You may only view your own profile."}), 403
@@ -288,7 +303,7 @@ def update_mechanic(_manager_id, mechanic_id):
     mechanic.password_hash = generate_password_hash(plaintext_password)
 
     db.session.commit()
-    cache.delete(MECHANICS_CACHE_KEY)  # list now holds this mechanic's old values
+    cache.clear()  # every cached page now holds this mechanic's old values
     return mechanic_schema.jsonify(mechanic), 200
 
 
@@ -307,7 +322,7 @@ def delete_mechanic(_manager_id, mechanic_id):
 
     db.session.delete(mechanic)
     db.session.commit()
-    cache.delete(MECHANICS_CACHE_KEY)  # deleted mechanic must vanish from the list
+    cache.clear()  # deleted mechanic must vanish from every cached page
     return (
         jsonify({"message": f"Mechanic id: {mechanic_id}, successfully deleted."}),
         200,

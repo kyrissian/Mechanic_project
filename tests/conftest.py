@@ -109,7 +109,6 @@ def make_service_ticket_kwargs(**overrides):
     is Numeric), matching the model's actual Python types rather than
     the JSON-friendly strings a route payload would use.
     """
-
     defaults = {
         "vin": "1HGCM82633A004352",
         "service_date": date(2026, 1, 5),
@@ -211,13 +210,10 @@ def seed_manager(db, **overrides):  # pylint: disable=redefined-outer-name
     the API -- there is no API route to create the first manager, by
     design (see Mechanic.role in app/models/mechanic.py). Returns
     (manager, plaintext_password) so the caller can log in through
-    the real API afterward.
-
-    Defaults to a distinct identity (name/email) from
-    make_mechanic_payload()'s default -- otherwise a test that seeds
-    a manager and then creates a mechanic via the API with no
-    overrides would collide on email and fail with a 400, since both
-    would default to the same "Alex Chen" identity.
+    the real API afterward. Defaults to a distinct identity from
+    make_mechanic_payload()'s default, so a test that seeds a manager
+    and then creates a mechanic via the API with no overrides doesn't
+    collide on email.
     """
     password = overrides.pop("password", "bosspass1")
     kwargs = make_mechanic_kwargs(
@@ -272,3 +268,40 @@ def mechanic(client, manager):  # pylint: disable=redefined-outer-name
     the manager fixture's token. Yields (mechanic_id, auth_headers)."""
     _, manager_headers = manager
     return create_mechanic(client, manager_headers)
+
+
+def make_inventory_payload(index=None, **overrides):
+    """Default JSON body for creating/updating a part via the API.
+    Pass index for a unique name."""
+    name = "Oil Filter" if index is None else f"Part {index}"
+    payload = {"name": name, "price": "12.50", "quantity_on_hand": 20}
+    payload.update(overrides)
+    return payload
+
+
+def create_part(client, manager_headers, **overrides):
+    """Create a part through the real API (manager-only). Returns its id."""
+    response = client.post(
+        "/inventory", json=make_inventory_payload(**overrides), headers=manager_headers
+    )
+    return response.json["id"]
+
+
+def create_ticket(client, manager_headers, customer_id=None, **overrides):
+    """Create a service ticket through the real API (manager-only) and
+    return its id. If no customer_id is given, a default customer is
+    created first, so a test that needs two tickets must create the
+    customer itself and pass customer_id to avoid a duplicate email."""
+    if customer_id is None:
+        customer_id = client.post("/customers", json=make_customer_payload()).json["id"]
+    payload = {
+        "customer_id": customer_id,
+        "vin": "5YJSA1E26HF000337",
+        "service_date": "2026-02-10",
+        "service_desc": "Oil change and inspection",
+        "cost": "120.00",
+    }
+    payload.update(overrides)
+    return client.post(
+        "/service-tickets", json=payload, headers=manager_headers
+    ).json["id"]

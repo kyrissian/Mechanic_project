@@ -9,12 +9,17 @@ should be able to get serviced multiple times."
 
 password_hash is NOT part of the class-provided ERD -- it's added
 here specifically for the Token Authentication lesson, which requires
-customers to be able to log in. Documented as a deliberate extension
-beyond the diagram, same category as the extra-credit GET-one routes,
-rather than a silent departure from it.
+customers to be able to log in. deleted_at is also not in the ERD.
+
+Customers are never hard-deleted. Closing an account sets deleted_at
+and scrubs the identifying fields (see delete_customer), but the row
+stays, because a customer's tickets are the shop's business records
+and must keep pointing at something. is_active is the one place that
+decides whether an account is still usable.
 """
 
-from typing import List, TYPE_CHECKING
+from datetime import datetime
+from typing import List, Optional, TYPE_CHECKING
 
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -38,7 +43,14 @@ class Customer(db.Model):
     # werkzeug.security.generate_password_hash before this is ever
     # set, and verify with check_password_hash on login.
     password_hash: Mapped[str] = mapped_column(db.String(255), nullable=False)
+    # NULL for an active account; set (naive UTC) when it is closed.
+    deleted_at: Mapped[Optional[datetime]] = mapped_column(nullable=True)
 
     service_tickets: Mapped[List["ServiceTicket"]] = relationship(
         back_populates="customer"
     )
+
+    @property
+    def is_active(self) -> bool:
+        """True while the account has not been closed."""
+        return self.deleted_at is None

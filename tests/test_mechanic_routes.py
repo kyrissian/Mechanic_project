@@ -85,18 +85,18 @@ def test_create_mechanic_rejects_invalid_role(client, manager):
     assert "role" in response.json["details"]
 
 
-def test_get_mechanics_requires_manager(client, manager, mechanic):
-    """GET /mechanics (the full roster, including salary) should
-    succeed for a manager. Depends on the mechanic fixture existing
-    so the roster has two entries to count."""
+def test_get_mechanics_requires_manager(client, manager, mechanic):  # pylint: disable=unused-argument
+    """GET /mechanics (the full roster, including salary), paginated,
+    should succeed for a manager. mechanic exists only for its side
+    effect (a second row on the roster) -- its value is unused."""
     _, manager_headers = manager
-    _mechanic_id, _ = mechanic  # unpacked to confirm the fixture ran; unused otherwise
 
     response = client.get("/mechanics", headers=manager_headers)
 
     assert response.status_code == 200
-    assert len(response.json) == 2  # the manager and the mechanic fixture
-    assert "salary" in response.json[0]
+    assert len(response.json["mechanics"]) == 2  # the manager and the mechanic fixture
+    assert response.json["total"] == 2
+    assert "salary" in response.json["mechanics"][0]
 
 
 def test_get_mechanics_rejects_regular_mechanic(client, mechanic):

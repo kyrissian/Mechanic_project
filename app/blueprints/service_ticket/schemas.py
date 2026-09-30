@@ -2,6 +2,8 @@
 Marshmallow schema for the ServiceTicket model.
 """
 
+from decimal import Decimal
+
 from marshmallow import fields, validate
 
 from app.extensions import ma
@@ -14,6 +16,12 @@ from app.models.service_ticket import ServiceTicket
 VALID_STATUSES = ["Pending", "In Progress", "Completed", "Paid", "Picked Up"]
 OPEN_STATUSES = ["Pending", "In Progress", "Completed"]
 CLOSED_STATUSES = ["Paid", "Picked Up"]
+
+
+def _money(value):
+    """Format a Decimal as a two-place string (e.g. "12.50"), the same
+    format the Decimal schema fields use, for values built by hand."""
+    return str(value.quantize(Decimal("0.01")))
 
 
 class ServiceTicketSchema(ma.SQLAlchemyAutoSchema):
@@ -60,10 +68,9 @@ class ServiceTicketSchema(ma.SQLAlchemyAutoSchema):
         required=False, validate=validate.OneOf(VALID_STATUSES)
     )
 
-    # cost is Numeric(10, 2) in the model (see service_ticket.py) --
-    # as_string=True makes Marshmallow serialize it as a JSON string
-    # (e.g. "450.00") rather than trying to serialize a raw Decimal,
-    # which Flask's default JSON encoder can't do at all. It still
+    # cost is Numeric(10, 2) in the model. as_string=True with places=2
+    # serializes it as a fixed-precision string (e.g. "450.00"), so
+    # every money value in this API formats identically. It still
     # accepts an int, float, or string on input. Required: an
     # estimate must be given up front when a ticket is created.
     cost = fields.Decimal(as_string=True, places=2, required=True)
@@ -76,10 +83,30 @@ class ServiceTicketSchema(ma.SQLAlchemyAutoSchema):
     # indistinguishable from a silent no-op at the API level.
     mechanic_ids = ma.Method("get_mechanic_ids", dump_only=True)
 
+    # Same idea for the parts used on the ticket: one entry per line,
+    # with the name, quantity, the unit_price recorded when the part
+    # was added, and the resulting line_total.
+    parts = ma.Method("get_parts", dump_only=True)
+
     def get_mechanic_ids(self, obj):
         """Returns the ids of every mechanic currently assigned to
         this ticket, read directly from the relationship."""
         return [mechanic.id for mechanic in obj.mechanics]
+
+    def get_parts(self, obj):
+        """Returns the ticket's part lines. unit_price is the price
+        recorded when the part was added, not the part's current
+        catalog price."""
+        return [
+            {
+                "inventory_id": line.inventory_id,
+                "name": line.part.name,
+                "quantity": line.quantity,
+                "unit_price": _money(line.unit_price),
+                "line_total": _money(line.unit_price * line.quantity),
+            }
+            for line in obj.ticket_parts
+        ]
 
 
 class TicketDetailsUpdateSchema(ma.Schema):
@@ -113,8 +140,16 @@ class TicketMechanicEditSchema(ma.Schema):
     remove_ids = fields.List(fields.Integer(), load_default=list)
 
 
+class AddPartSchema(ma.Schema):
+    """For PUT /service-tickets/<id>/add-part/<inventory_id>: how many
+    of the part to add. Optional; defaults to 1."""
+
+    quantity = fields.Integer(load_default=1, validate=validate.Range(min=1, max=1000))
+
+
 service_ticket_schema = ServiceTicketSchema()
 service_tickets_schema = ServiceTicketSchema(many=True)
 ticket_details_update_schema = TicketDetailsUpdateSchema()
 status_update_schema = StatusUpdateSchema()
 ticket_mechanic_edit_schema = TicketMechanicEditSchema()
+add_part_schema = AddPartSchema()

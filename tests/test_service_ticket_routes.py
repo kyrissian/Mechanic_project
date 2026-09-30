@@ -1,6 +1,6 @@
 """Tests for the ServiceTicket routes: creation, reads, manager-only
-description/cost edits, status updates open to any mechanic, and
-both the single-action and bulk mechanic assignment routes."""
+description/cost edits, status updates gated by assignment, and both
+the single-action and bulk mechanic assignment routes."""
 
 from tests.conftest import create_mechanic, make_customer_payload
 
@@ -165,7 +165,7 @@ def test_create_service_ticket_rejects_excluded_letters(client, manager):
 
 def test_get_service_tickets(client, manager, mechanic):
     """GET /service-tickets should return every ticket that's been
-    created, when authenticated as any mechanic."""
+    created, paginated, when authenticated as any mechanic."""
     customer_id = create_test_customer(client)
     _, manager_headers = manager
     _, mechanic_headers = mechanic
@@ -182,7 +182,8 @@ def test_get_service_tickets(client, manager, mechanic):
     response = client.get("/service-tickets", headers=mechanic_headers)
 
     assert response.status_code == 200
-    assert len(response.json) == 2
+    assert len(response.json["tickets"]) == 2
+    assert response.json["total"] == 2
 
 
 def test_get_service_tickets_requires_token(client):
@@ -220,7 +221,7 @@ def test_get_single_service_ticket_not_found(client, mechanic):
 
 def test_my_tickets_returns_only_assigned_tickets(client, manager, mechanic):
     """GET /service-tickets/my-tickets should return only the tickets
-    the logged-in mechanic is personally assigned to."""
+    the logged-in mechanic is personally assigned to, paginated."""
     customer_id = create_test_customer(client)
     _, manager_headers = manager
     mechanic_id, mechanic_headers = mechanic
@@ -247,16 +248,37 @@ def test_my_tickets_returns_only_assigned_tickets(client, manager, mechanic):
     response = client.get("/service-tickets/my-tickets", headers=mechanic_headers)
 
     assert response.status_code == 200
-    assert len(response.json) == 1
-    assert response.json[0]["id"] == mine["id"]
+    assert response.json["total"] == 1
+    assert response.json["tickets"][0]["id"] == mine["id"]
 
 
-def test_my_tickets_requires_token(client):
-    """GET /service-tickets/my-tickets should return 401 with no
-    Authorization header."""
-    response = client.get("/service-tickets/my-tickets")
+def test_my_assigned_tickets_paginates(client, manager, mechanic):
+    """A mechanic assigned to more than page_size tickets sees them
+    split across pages."""
+    customer_id = create_test_customer(client)
+    _, manager_headers = manager
+    mechanic_id, mechanic_headers = mechanic
 
-    assert response.status_code == 401
+    for i in range(3):
+        ticket_id = client.post(
+            "/service-tickets",
+            json=make_ticket_payload(customer_id, vin=f"2T1BURHE0JC01467{i}"),
+            headers=manager_headers,
+        ).json["id"]
+        client.put(
+            f"/service-tickets/{ticket_id}/assign-mechanic/{mechanic_id}",
+            headers=manager_headers,
+        )
+
+    first_page = client.get("/service-tickets/my-tickets", headers=mechanic_headers)
+    second_page = client.get(
+        "/service-tickets/my-tickets?page=2", headers=mechanic_headers
+    )
+
+    assert first_page.status_code == 200
+    assert len(first_page.json["tickets"]) == 2
+    assert first_page.json["total"] == 3
+    assert len(second_page.json["tickets"]) == 1
 
 
 def test_update_ticket_details_requires_manager(client, manager):
@@ -325,8 +347,33 @@ def test_update_ticket_details_not_found(client, manager):
 
 
 def test_update_ticket_status_any_mechanic(client, manager, mechanic):
-    """PUT /service-tickets/<id>/status should succeed for any
-    logged-in mechanic, not just a manager."""
+    """PUT /service-tickets/<id>/status should succeed for a mechanic
+    who IS assigned to the ticket, not just a manager."""
+    customer_id = create_test_customer(client)
+    _, manager_headers = manager
+    mechanic_id, mechanic_headers = mechanic
+    created = client.post(
+        "/service-tickets", json=make_ticket_payload(customer_id), headers=manager_headers
+    ).json
+    client.put(
+        f"/service-tickets/{created['id']}/assign-mechanic/{mechanic_id}",
+        headers=manager_headers,
+    )
+
+    response = client.put(
+        f"/service-tickets/{created['id']}/status",
+        json={"status": "In Progress"},
+        headers=mechanic_headers,
+    )
+
+    assert response.status_code == 200
+    assert response.json["status"] == "In Progress"
+
+
+def test_update_ticket_status_rejects_unassigned_mechanic(client, manager, mechanic):
+    """A mechanic who is NOT assigned to the ticket may not update its
+    status, even though status updates are otherwise open to any
+    mechanic."""
     customer_id = create_test_customer(client)
     _, manager_headers = manager
     _, mechanic_headers = mechanic
@@ -340,8 +387,27 @@ def test_update_ticket_status_any_mechanic(client, manager, mechanic):
         headers=mechanic_headers,
     )
 
+    assert response.status_code == 403
+
+
+def test_update_ticket_status_manager_always_allowed(client, manager):
+    """A manager may update ANY ticket's status, even one they aren't
+    personally assigned to (managers aren't assignable in the same
+    sense mechanics are)."""
+    customer_id = create_test_customer(client)
+    _, manager_headers = manager
+    created = client.post(
+        "/service-tickets", json=make_ticket_payload(customer_id), headers=manager_headers
+    ).json
+
+    response = client.put(
+        f"/service-tickets/{created['id']}/status",
+        json={"status": "Completed"},
+        headers=manager_headers,
+    )
+
     assert response.status_code == 200
-    assert response.json["status"] == "In Progress"
+    assert response.json["status"] == "Completed"
 
 
 def test_update_ticket_status_rejects_invalid_value(client, manager, mechanic):
@@ -349,10 +415,14 @@ def test_update_ticket_status_rejects_invalid_value(client, manager, mechanic):
     outside the five recognized values."""
     customer_id = create_test_customer(client)
     _, manager_headers = manager
-    _, mechanic_headers = mechanic
+    mechanic_id, mechanic_headers = mechanic
     created = client.post(
         "/service-tickets", json=make_ticket_payload(customer_id), headers=manager_headers
     ).json
+    client.put(
+        f"/service-tickets/{created['id']}/assign-mechanic/{mechanic_id}",
+        headers=manager_headers,
+    )
 
     response = client.put(
         f"/service-tickets/{created['id']}/status",

@@ -9,14 +9,19 @@ and assigning/removing mechanics (both the single-action and bulk
 routes) are all manager-only -- these are the same actions that were
 already reasoned as management decisions on the Mechanic side
 (creation, roster changes), applied consistently here. Updating a
-ticket's status is open to any logged-in mechanic, since that's the
-one action every mechanic performs as part of doing the actual work.
-Reading the ticket list/single ticket is open to any logged-in
-mechanic too -- staff need visibility into the whole queue. There is
-still no PUT/DELETE for the ticket resource itself (beyond the
-scoped description/cost/status routes below) -- a completed or
-in-progress service record should never be silently overwritten or
-erased wholesale.
+ticket's status is open to a manager OR a mechanic who is actually
+assigned to that ticket -- a mechanic with no connection to a job has
+no business changing its status, so this is checked the same way
+add_part_to_ticket already checks assignment. Adding a part to a
+ticket is open to a manager or a mechanic assigned to that ticket, and
+also refuses to allocate more of a part than the shop currently has in
+stock (see add_part_to_ticket), decrementing Inventory.quantity_on_hand
+by whatever is actually allocated. Reading the ticket list/single
+ticket is open to any logged-in mechanic -- staff need visibility into
+the whole queue. There is still no PUT/DELETE for the ticket resource
+itself (beyond the scoped description/cost/status routes below) -- a
+completed or in-progress service record should never be silently
+overwritten or erased wholesale.
 
 Customers never touch this blueprint directly: their own read-only
 view of their tickets lives at GET /customers/my-tickets in the
@@ -29,10 +34,13 @@ from sqlalchemy import select
 
 from app.extensions import db
 from app.models.customer import Customer
+from app.models.inventory import Inventory
 from app.models.service_ticket import ServiceTicket
 from app.models.mechanic import Mechanic
+from app.models.ticket_part import TicketPart
 from app.blueprints.service_ticket import service_ticket_bp
 from app.blueprints.service_ticket.schemas import (
+    add_part_schema,
     service_ticket_schema,
     service_tickets_schema,
     status_update_schema,
@@ -40,6 +48,7 @@ from app.blueprints.service_ticket.schemas import (
     ticket_mechanic_edit_schema,
 )
 from app.utils.errors import validation_error_response
+from app.utils.pagination import paginate_query
 from app.utils.util import manager_required, mechanic_token_required
 
 
@@ -68,7 +77,7 @@ def create_service_ticket(_manager_id):
     # means the response is a clean 404 either way, not a raw
     # IntegrityError caught by the global error handler.
     customer = db.session.get(Customer, ticket_data["customer_id"])
-    if not customer:
+    if not customer or not customer.is_active:
         return jsonify({"error": "Customer not found."}), 404
 
     new_ticket = ServiceTicket(**ticket_data)
@@ -80,23 +89,49 @@ def create_service_ticket(_manager_id):
 @service_ticket_bp.route("", methods=["GET"])
 @mechanic_token_required
 def get_service_tickets(_mechanic_id, _role):
-    """Retrieve every service ticket. Requires being logged in as any
-    mechanic -- staff need visibility into the full queue."""
-    query = select(ServiceTicket)
-    tickets = db.session.execute(query).scalars().all()
-    return service_tickets_schema.jsonify(tickets)
+    """Retrieve every service ticket, paginated. Requires being
+    logged in as any mechanic -- staff need visibility into the full
+    queue.
+
+    ?page (default 1) and ?page_size (default 3, capped at 30) work
+    the same way as every other paginated route -- see
+    app/utils/pagination.py. The small default reflects how much each
+    ticket carries: status, cost, assigned mechanics, and a parts
+    list with quantities and line totals.
+    """
+    result = paginate_query(
+        select(ServiceTicket), ServiceTicket.id, service_tickets_schema, "tickets",
+        size_limits=(3, 30),
+    )
+    return jsonify(result), 200
 
 
 @service_ticket_bp.route("/my-tickets", methods=["GET"])
 @mechanic_token_required
 def get_my_assigned_tickets(mechanic_id, _role):
-    """Retrieve every service ticket the logged-in mechanic is
-    personally assigned to -- the mechanic-side counterpart to
+    """Retrieve service tickets the logged-in mechanic is personally
+    assigned to, paginated -- the mechanic-side counterpart to
     GET /customers/my-tickets. mechanic_id comes from the validated
     token, never a URL parameter, so there's no id to tamper with.
+
+    ?page (default 1) and ?page_size (default 2, capped at 20) work
+    the same way as the customer version -- see
+    app/utils/pagination.py.
+
+    Queries ServiceTicket directly (joined through the mechanics
+    relationship) rather than reading mechanic.service_tickets off a
+    loaded Mechanic object, since the latter doesn't support
+    offset/limit pagination cleanly.
     """
-    mechanic = db.session.get(Mechanic, mechanic_id)
-    return service_tickets_schema.jsonify(mechanic.service_tickets), 200
+    query = (
+        select(ServiceTicket)
+        .join(ServiceTicket.mechanics)
+        .where(Mechanic.id == mechanic_id)
+    )
+    result = paginate_query(
+        query, ServiceTicket.id, service_tickets_schema, "tickets", size_limits=(2, 20)
+    )
+    return jsonify(result), 200
 
 
 @service_ticket_bp.route("/<int:ticket_id>", methods=["GET"])
@@ -142,15 +177,26 @@ def update_ticket_details(_manager_id, ticket_id):
 
 @service_ticket_bp.route("/<int:ticket_id>/status", methods=["PUT"])
 @mechanic_token_required
-def update_ticket_status(_mechanic_id, _role, ticket_id):
-    """Update a ticket's status. Open to any logged-in mechanic --
-    unlike every other write in this blueprint, changing status is
-    the one action every mechanic performs as part of doing the
-    actual work, not a management decision.
+def update_ticket_status(mechanic_id, role, ticket_id):
+    """Update a ticket's status. Allowed for a manager (overall
+    authority over every ticket), or for a mechanic who is actually
+    assigned to this specific ticket (403 otherwise) -- a mechanic
+    with no connection to a job has no business changing its status.
+    Checked the same way add_part_to_ticket checks assignment.
     """
     ticket = db.session.get(ServiceTicket, ticket_id)
     if not ticket:
         return jsonify({"error": "Service ticket not found."}), 404
+
+    if role != "manager":
+        mechanic = db.session.get(Mechanic, mechanic_id)
+        if mechanic not in ticket.mechanics:
+            return (
+                jsonify(
+                    {"error": "You may only update the status of tickets you are assigned to."}
+                ),
+                403,
+            )
 
     try:
         status_data = status_update_schema.load(request.json)
@@ -158,6 +204,83 @@ def update_ticket_status(_mechanic_id, _role, ticket_id):
         return validation_error_response(e)
 
     ticket.status = status_data["status"]
+    db.session.commit()
+    return service_ticket_schema.jsonify(ticket), 200
+
+
+@service_ticket_bp.route(
+    "/<int:ticket_id>/add-part/<int:inventory_id>", methods=["PUT"]
+)
+@mechanic_token_required
+def add_part_to_ticket(requester_id, role, ticket_id, inventory_id):
+    """Add a part to a ticket. Open to a manager, or to a mechanic
+    who is assigned to this ticket (403 otherwise).
+
+    The body is optional: {"quantity": n} adds n of the part
+    (default 1). If the part is already on the ticket, its quantity
+    is increased instead of creating a second line. When a part is
+    first added, its current catalog price is copied onto the line
+    as unit_price, so later price changes never alter this ticket;
+    the line keeps that original price even if more are added later.
+
+    Refuses to allocate more of a part than the shop currently has in
+    stock (400, naming how many are actually available), and
+    decrements Inventory.quantity_on_hand by whatever is allocated --
+    so stock levels stay accurate automatically rather than depending
+    on a manager remembering to update them by hand after every job.
+    """
+    ticket = db.session.get(ServiceTicket, ticket_id)
+    if not ticket:
+        return jsonify({"error": "Service ticket not found."}), 404
+
+    part = db.session.get(Inventory, inventory_id)
+    if not part:
+        return jsonify({"error": "Part not found."}), 404
+
+    if role != "manager":
+        mechanic = db.session.get(Mechanic, requester_id)
+        if mechanic not in ticket.mechanics:
+            return (
+                jsonify({"error": "You may only add parts to tickets you are assigned to."}),
+                403,
+            )
+
+    try:
+        # get_json(silent=True) so a request with no body at all is
+        # fine (quantity defaults to 1) instead of raising a 415.
+        part_data = add_part_schema.load(request.get_json(silent=True) or {})
+    except ValidationError as e:
+        return validation_error_response(e)
+
+    requested_quantity = part_data["quantity"]
+    if requested_quantity > part.quantity_on_hand:
+        return (
+            jsonify(
+                {
+                    "error": (
+                        f"Not enough {part.name} in stock. "
+                        f"Requested {requested_quantity}, only "
+                        f"{part.quantity_on_hand} available."
+                    )
+                }
+            ),
+            400,
+        )
+
+    line = db.session.get(TicketPart, (ticket_id, inventory_id))
+    if line:
+        line.quantity += requested_quantity
+    else:
+        db.session.add(
+            TicketPart(
+                ticket_id=ticket_id,
+                inventory_id=inventory_id,
+                quantity=requested_quantity,
+                unit_price=part.price,
+            )
+        )
+    part.quantity_on_hand -= requested_quantity
+
     db.session.commit()
     return service_ticket_schema.jsonify(ticket), 200
 

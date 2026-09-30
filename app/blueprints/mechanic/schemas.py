@@ -31,11 +31,10 @@ class MechanicSchema(ma.SQLAlchemyAutoSchema):
 
     id = ma.auto_field(dump_only=True)
 
-    # salary is Numeric(10, 2) in the model (see mechanic.py) --
-    # as_string=True makes Marshmallow serialize it as a JSON string
-    # (e.g. "55000.00") rather than trying to serialize a raw Decimal,
-    # which Flask's default JSON encoder can't do at all. It still
-    # accepts an int, float, or string on input.
+    # salary is Numeric(10, 2) in the model. as_string=True with
+    # places=2 serializes it as a fixed-precision string (e.g.
+    # "55000.00"), so every money value in this API formats
+    # identically. It still accepts an int, float, or string on input.
     salary = fields.Decimal(as_string=True, places=2, required=True)
 
     # Not a real model column -- this is the plaintext password a

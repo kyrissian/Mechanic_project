@@ -45,7 +45,7 @@ def test_limit_only_applies_to_customer_creation(rate_limited_client):
     mechanic_response = rate_limited_client.post(
         "/mechanics", json=make_mechanic_payload(), headers=manager_headers
     )
-    customers_response = rate_limited_client.get("/customers")
+    customers_response = rate_limited_client.get("/customers", headers=manager_headers)
 
     assert mechanic_response.status_code == 201
     assert customers_response.status_code == 200
@@ -128,7 +128,26 @@ def test_default_limit_applies_to_unlimited_routes(rate_limited_client):
     /customers -- still carries the global default (200/day, 50/hour)
     set on the Limiter itself, shown by rate-limit headers being
     present even though nothing decorates the route directly."""
-    response = rate_limited_client.get("/customers")
+    manager_obj, password = seed_manager(_db)
+    login_response = rate_limited_client.post(
+        "/mechanics/login", json={"email": manager_obj.email, "password": password}
+    )
+    manager_headers = {"Authorization": f"Bearer {login_response.json['auth_token']}"}
+
+    response = rate_limited_client.get("/customers", headers=manager_headers)
 
     assert response.status_code == 200
     assert "X-RateLimit-Limit" in response.headers
+
+
+def test_delete_inventory_blocked_after_ten_requests(rate_limited_client):
+    """DELETE /inventory/<id> carries the same 10-per-hour limit as the
+    other delete routes. The limiter is the outer decorator, so
+    unauthenticated attempts (401) still count toward it."""
+    for _ in range(10):
+        response = rate_limited_client.delete("/inventory/999")
+        assert response.status_code == 401
+
+    response = rate_limited_client.delete("/inventory/999")
+
+    assert response.status_code == 429

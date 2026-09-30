@@ -39,12 +39,20 @@ def create_app(config_class=DevelopmentConfig):
     # about every table before anything (like db.create_all(), used in
     # tests) tries to create them. service_mechanics must come before
     # mechanic/service_ticket since relationship(secondary=...) in
-    # those files refers to it by table name. These imports are for
-    # their side effect (registering each model's table with
-    # SQLAlchemy) rather than to use the names directly, hence the
-    # disable comment below.
+    # those files refers to it by table name. inventory and
+    # ticket_part come last: ticket_part's foreign keys point at both
+    # service_tickets and inventory. These imports are for their side
+    # effect (registering each model's table with SQLAlchemy) rather
+    # than to use the names directly, hence the disable comment below.
     # pylint: disable=unused-import,import-outside-toplevel
-    from app.models import customer, service_mechanics, mechanic, service_ticket
+    from app.models import (
+        customer,
+        service_mechanics,
+        mechanic,
+        service_ticket,
+        inventory,
+        ticket_part,
+    )
 
     from app.blueprints.customer import customer_bp
     app.register_blueprint(customer_bp, url_prefix="/customers")
@@ -54,5 +62,8 @@ def create_app(config_class=DevelopmentConfig):
 
     from app.blueprints.service_ticket import service_ticket_bp
     app.register_blueprint(service_ticket_bp, url_prefix="/service-tickets")
+
+    from app.blueprints.inventory import inventory_bp
+    app.register_blueprint(inventory_bp, url_prefix="/inventory")
 
     return app

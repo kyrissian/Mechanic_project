@@ -26,12 +26,15 @@ class CustomerSchema(ma.SQLAlchemyAutoSchema):
         password_hash is excluded entirely -- it must never be
         accepted directly from a client (routes hash the plaintext
         `password` field below themselves) or appear in a serialized
-        response.
+        response. deleted_at is excluded for a different reason: only
+        the account-closing route may set it. If it were an ordinary
+        schema field, a client could send it on create or update and
+        close (or "reopen") an account without the anonymization step.
         """
 
         model = Customer
         load_instance = False
-        exclude = ("password_hash",)
+        exclude = ("password_hash", "deleted_at")
 
     # Explicitly dump_only rather than relying on SQLAlchemyAutoSchema's
     # default behavior for primary keys -- this guarantees `id` can

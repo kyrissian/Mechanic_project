@@ -22,6 +22,8 @@ floating point cannot represent most decimal currency values exactly
 Belongs to exactly one Customer (one-to-many). Related to Mechanic
 through the service_mechanics junction table (many-to-many: a ticket
 can need multiple mechanics, a mechanic can work multiple tickets).
+Related to Inventory through the TicketPart junction model (a ticket
+can use many parts, each with a quantity).
 """
 
 from datetime import date
@@ -36,12 +38,14 @@ from app.extensions import db
 if TYPE_CHECKING:
     from app.models.customer import Customer
     from app.models.mechanic import Mechanic
+    from app.models.ticket_part import TicketPart
 
 
 class ServiceTicket(db.Model):
     """A record of a single service visit: the vehicle's VIN, the
     date, a description of the work, its current status, and its
-    cost, linked to its customer and the mechanic(s) assigned."""
+    cost, linked to its customer, the mechanic(s) assigned, and the
+    parts used."""
 
     __tablename__ = "service_tickets"
 
@@ -67,4 +71,9 @@ class ServiceTicket(db.Model):
     customer: Mapped["Customer"] = relationship(back_populates="service_tickets")
     mechanics: Mapped[List["Mechanic"]] = relationship(
         secondary="service_mechanics", back_populates="service_tickets"
+    )
+    # A ticket's part lines belong to it: if a ticket were ever
+    # removed, its lines go with it rather than being orphaned.
+    ticket_parts: Mapped[List["TicketPart"]] = relationship(
+        back_populates="ticket", cascade="all, delete-orphan"
     )

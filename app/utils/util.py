@@ -13,10 +13,22 @@ id happened to collide with a real mechanic id. The "type" claim
 closes that gap: each decorator explicitly checks it in addition to
 the signature itself.
 
+Both token_required and mechanic_token_required look up the account
+fresh from the database on every request, rather than trusting the
+token's claims alone. A JWT is valid on its own signature for up to
+an hour after issue; without a database check, closing a customer's
+account or deleting/demoting a mechanic would have no effect until
+their existing token happened to expire. For mechanics specifically,
+role is read from the database every time, NOT from the token's
+"role" claim -- that claim is kept in the payload for reference only.
+This means a promotion or demotion by a manager takes effect on the
+mechanic's very next request, not their next login.
+
 manager_required builds on mechanic_token_required, additionally
-checking that the decoded token's role is "manager" -- so a plain
-mechanic token is correctly rejected from manager-only routes even
-though it's a fully valid, unexpired mechanic token.
+checking that the (freshly looked-up) role is "manager" -- so a
+demoted manager loses manager-only access immediately, and a mechanic
+promoted to manager gains it immediately, both without needing to log
+in again.
 """
 
 from datetime import datetime, timedelta, timezone
@@ -25,6 +37,10 @@ from functools import wraps
 from flask import current_app, jsonify, request
 from jose import jwt
 from jose.exceptions import ExpiredSignatureError, JWTError
+
+from app.extensions import db
+from app.models.customer import Customer
+from app.models.mechanic import Mechanic
 
 
 def encode_token(customer_id):
@@ -46,12 +62,12 @@ def encode_token(customer_id):
 
 
 def encode_mechanic_token(mechanic_id, role):
-    """Create a JWT identifying the given mechanic and their role,
-    valid for 1 hour. role is carried in the token itself (rather
-    than looked up fresh from the database on every request) so
-    manager_required can check it without an extra query -- it's
-    still only ever set here, at login, from the mechanic's real
-    database row.
+    """Create a JWT identifying the given mechanic, valid for 1 hour.
+
+    role is included in the payload for reference/debugging, but is
+    NOT what authorization decisions are based on -- see the module
+    docstring. mechanic_token_required always re-reads the mechanic's
+    current role from the database instead.
     """
     payload = {
         "exp": datetime.now(timezone.utc) + timedelta(hours=1),
@@ -99,6 +115,13 @@ def token_required(f):
     """Require a valid customer Bearer token in the Authorization
     header. On success, passes the token's customer_id as the first
     positional argument to the wrapped route function.
+
+    A correctly signed, unexpired token is not enough on its own: the
+    account it names must also still exist and be active. Tokens last
+    an hour, and closing an account (see delete_customer) does not
+    and cannot reach out and invalidate tokens already issued, so
+    without this check a closed account's token would keep working
+    until it expired.
     """
 
     @wraps(f)
@@ -107,6 +130,11 @@ def token_required(f):
         if error:
             return error
         customer_id = int(data["sub"])
+
+        customer = db.session.get(Customer, customer_id)
+        if customer is None or not customer.is_active:
+            return jsonify({"error": "This account is no longer active."}), 401
+
         return f(customer_id, *args, **kwargs)
 
     return decorated
@@ -114,8 +142,13 @@ def token_required(f):
 
 def mechanic_token_required(f):
     """Require a valid mechanic Bearer token in the Authorization
-    header. On success, passes the token's mechanic_id and role as
-    the first two positional arguments to the wrapped route function.
+    header. On success, passes the mechanic's id and their CURRENT
+    role (read fresh from the database, not from the token) as the
+    first two positional arguments to the wrapped route function.
+
+    Also rejects the request if the mechanic account no longer
+    exists -- a token issued before a mechanic was deleted would
+    otherwise keep working until it expired.
     """
 
     @wraps(f)
@@ -124,21 +157,27 @@ def mechanic_token_required(f):
         if error:
             return error
         mechanic_id = int(data["sub"])
-        role = data.get("role")
-        return f(mechanic_id, role, *args, **kwargs)
+
+        mechanic = db.session.get(Mechanic, mechanic_id)
+        if mechanic is None:
+            return jsonify({"error": "This mechanic account no longer exists."}), 401
+
+        return f(mechanic_id, mechanic.role, *args, **kwargs)
 
     return decorated
 
 
 def manager_required(f):
-    """Require a valid mechanic Bearer token AND that its role is
-    "manager". On success, passes the token's mechanic_id only --
-    role is not forwarded, since by this point it's already been
-    confirmed to be "manager".
+    """Require a valid mechanic Bearer token AND that the account's
+    CURRENT role (not the token's claimed role) is "manager". On
+    success, passes the token's mechanic_id only -- role is not
+    forwarded, since by this point it's already been confirmed to be
+    "manager".
 
     Built on top of mechanic_token_required rather than duplicating
-    its token-decoding logic: this function only adds the role check,
-    then delegates everything else to the decorator it wraps.
+    its token-decoding and database-lookup logic: this function only
+    adds the role check, then delegates everything else to the
+    decorator it wraps.
 
     The inner wrapper's own parameter is deliberately named
     requester_id rather than mechanic_id: several routes this
