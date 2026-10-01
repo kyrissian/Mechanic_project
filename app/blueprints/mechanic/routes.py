@@ -17,16 +17,17 @@ any logged-in mechanic, but deliberately exclude salary from their
 response (see _mechanic_summary), since sorting by workload doesn't
 require seeing anyone's pay.
 
-Caching: get_mechanics is the one cached route in this app. Each
-page/page_size combination is cached under its own key, since
-Flask-Caching keys by the full request path -- so create_mechanic,
+Caching: get_mechanics is the one cached route in this app, using
+@cache.cached(..., query_string=True) so each page/page_size
+combination is cached under its own key -- Flask-Caching's key does
+NOT vary by query string unless you ask it to. create_mechanic,
 update_mechanic, and delete_mechanic all call cache.clear() rather
 than deleting a single key, guaranteeing every cached page is
-invalidated on any write, not just page 1. This is safe specifically
-because GET /mechanics is the only cached route anywhere in the app;
-if a second cached route were ever added, this would need to become
-more targeted. The single-mechanic lookup (get_mechanic) is NOT
-cached at all -- see that function's docstring for why.
+invalidated on any write, not just one of them. This is safe
+specifically because GET /mechanics is the only cached route anywhere
+in the app; if a second cached route were ever added, this would need
+to become more targeted. The single-mechanic lookup (get_mechanic) is
+NOT cached at all -- see that function's docstring for why.
 
 Decorator order also matters for correctness, not just cleanliness:
 authentication must run BEFORE caching on get_mechanics. Flask-
