@@ -10,3 +10,5 @@ Flask-Limiter
 Flask-Caching
 python-jose
 Faker
+flask-swagger
+flask_swagger_ui

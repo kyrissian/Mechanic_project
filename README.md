@@ -9,10 +9,11 @@
 ![Faker](https://img.shields.io/badge/Faker-FF6E42?style=flat-square)
 ![pytest](https://img.shields.io/badge/pytest-0A9EDC?logo=pytest&logoColor=white&style=flat-square)
 ![Postman](https://img.shields.io/badge/Postman-FF6C37?logo=postman&logoColor=white&style=flat-square)
+![Swagger](https://img.shields.io/badge/Swagger-85EA2D?logo=swagger&logoColor=black&style=flat-square)
 ![Pylint](https://img.shields.io/badge/Pylint-enabled-brightgreen?style=flat-square)
 ![GitHub Actions](https://img.shields.io/badge/GitHub_Actions-2088FF?logo=githubactions&logoColor=white&style=flat-square)
 
-A Flask + SQLAlchemy + MySQL backend for a mechanic shop, with role-based JWT authentication (customer, mechanic, manager), a real service-ticket lifecycle (status, cost, and parts), a stock-aware inventory system, and a Faker-driven seed script — built on the Application Factory pattern. Built for the "Database Design and Planning with ERDs," "SQLAlchemy Relationships," "Marshmallow Schemas & CRUD Endpoints," "Application Factory Pattern," "Rate Limiting and Caching," "Token Authentication," "Advanced SQLAlchemy Queries," and "Implementing Junction Tables with Additional Fields" course modules.
+A Flask + SQLAlchemy + MySQL backend for a mechanic shop, with role-based JWT authentication (customer, mechanic, manager), a real service-ticket lifecycle (status, cost, and parts), a stock-aware inventory system, a Faker-driven seed script, and full interactive Swagger documentation — built on the Application Factory pattern. Built for the "Database Design and Planning with ERDs," "SQLAlchemy Relationships," "Marshmallow Schemas & CRUD Endpoints," "Application Factory Pattern," "Rate Limiting and Caching," "Token Authentication," "Advanced SQLAlchemy Queries," "Implementing Junction Tables with Additional Fields," and "API Documentation" course modules.
 
 **Author:** Kathy Booth (with contributions from Claude and GitHub Copilot)
 
@@ -28,6 +29,7 @@ A Flask + SQLAlchemy + MySQL backend for a mechanic shop, with role-based JWT au
 - [Entity-Relationship Diagram](#entity-relationship-diagram)
 - [Roles & Authorization](#roles--authorization)
 - [API Endpoints](#api-endpoints)
+- [Interactive Documentation (Swagger)](#interactive-documentation-swagger)
 - [Authentication](#authentication)
 - [Rate Limiting & Caching](#rate-limiting--caching)
 - [Pagination](#pagination)
@@ -42,6 +44,14 @@ A Flask + SQLAlchemy + MySQL backend for a mechanic shop, with role-based JWT au
 ---
 
 ## Changelog
+
+### 2026-09-30: Interactive Swagger Documentation
+
+- Added full OpenAPI/Swagger 2.0 documentation (`app/static/swagger.yaml`), served interactively at `/api/docs` via `flask-swagger-ui`. Covers all 31 operations across all four resources (Customer, Mechanic, Service Ticket, Inventory) -- every request body, response shape, and status code, including error cases (401/403/404/409/429) with real example messages, not just the happy path.
+- Two named security schemes (`customerAuth`, `mechanicAuth`) reflect the API's actual two-token-type auth model, rather than a single generic scheme -- a meaningful departure from the lesson's own simpler example, made because this API genuinely has two non-interchangeable token types.
+- Every documented response was verified against the live running server and real seeded data (including the trickier cases: the over-allocation message on `add-part`, both soft-delete and hard-delete 409/403 paths, and role-based 403s), not written from reading the route code alone.
+- `persistAuthorization: true` added to the Swagger UI config so an authorized token survives a page reload (needed constantly while iterating on the spec itself).
+- See [Interactive Documentation (Swagger)](#interactive-documentation-swagger) for how to use it.
 
 ### 2026-09-29: Code Review Pass -- Cache Key Correction and a Database-Level Uniqueness Constraint
 
@@ -138,6 +148,7 @@ This was the largest single change to the project -- a deliberate redesign that 
 | Config / secrets           | `python-dotenv` (`.env`, gitignored)                                                 |
 | Testing                    | pytest, with an isolated in-memory SQLite database                                   |
 | Manual API testing         | Postman (collection included in the repo)                                            |
+| API documentation          | Swagger / OpenAPI 2.0 (`flask-swagger-ui`), interactive at `/api/docs`               |
 | Linting                    | Pylint                                                                               |
 | CI                         | GitHub Actions (test + lint only -- no deploy stage; this API isn't hosted anywhere) |
 
@@ -323,6 +334,26 @@ Deliberately no full `PUT`/`DELETE` for the ticket resource itself -- only the s
 
 ---
 
+## Interactive Documentation (Swagger)
+
+With the server running (`python run.py`), the full API is documented interactively at:
+
+```
+http://127.0.0.1:5000/api/docs
+```
+
+This is a Swagger UI page generated from `app/static/swagger.yaml` (OpenAPI/Swagger 2.0), covering all 31 operations across all four resources -- every request body, every response shape, and every status code the API actually returns, including the non-obvious ones (a `409` for deleting a customer with service history or a used inventory part, a `403` for a mechanic acting on a ticket they aren't assigned to, the exact `400` message `add-part` gives when a request would over-allocate a part's stock). Every documented response was verified against the real running server and real MySQL data, not just written from reading the route code.
+
+**Two separate security schemes** are defined (`customerAuth` and `mechanicAuth`), matching the two real, non-interchangeable token types this API issues -- a customer token can never open a mechanic-only route, and vice versa. To call a protected route from the Swagger UI itself:
+
+1. Run the relevant login route (`POST /customers/login` or `POST /mechanics/login`) directly from the page and copy the `auth_token` from the response.
+2. Click **Authorize** (top right) and, under the matching scheme, type the literal word `Bearer`, a space, then the token -- e.g. `Bearer eyJhbGci...`. Swagger UI sends this value verbatim as the `Authorization` header; it does not add the `Bearer` prefix automatically.
+3. Click **Authorize**, then **Close**. The token is now attached to every "Try it out" request until you log out or clear it (persisted across page reloads via `persistAuthorization: true` in the Swagger UI config).
+
+Manager-only vs. any-mechanic vs. assigned-mechanic-only access is a distinction Swagger 2.0's `security` field can't express on its own (it can only say "a mechanicAuth token is required," not "...and specifically one with `role: manager`") -- each such route's exact requirement is spelled out in that operation's own description instead.
+
+---
+
 ## Authentication
 
 Two independent JWT flows exist, both signed with the same `SECRET_KEY` but distinguished by a `"type"` claim in the token payload (`"customer"` or `"mechanic"`) -- without that claim, a customer's own valid token could potentially be presented to a mechanic-only route (or vice versa) if their ids happened to collide.
@@ -453,9 +484,13 @@ Mechanic_project/
     workflows/
       ci.yml
   app/
-    __init__.py                # app factory (create_app())
+    __init__.py                # app factory (create_app()); also wires up the
+                                # Swagger UI blueprint at /api/docs
     extensions.py               # shared db / ma / limiter / cache instances
     error_handlers.py           # global JSON error handlers
+    static/
+      swagger.yaml               # OpenAPI/Swagger 2.0 spec -- every path and
+                                 # definition for all four resources
     utils/
       __init__.py
       util.py                   # encode_token/encode_mechanic_token, token_required,
@@ -620,6 +655,7 @@ A code review pass (GitHub Copilot) suggested several improvements genuinely wor
 - [x] Every error response, including validation failures, shares one consistent `{"error": ...}` envelope
 - [x] `seed.py`: Faker-driven demo data with a documented, predictable local password scheme
 - [x] Postman collection included in the repo and covers every endpoint, including auth, role-rejection, and business-rule-conflict cases
+- [x] Interactive Swagger documentation at `/api/docs`, covering every endpoint's paths, request/response definitions, and error cases, verified live against the running server
 - [x] 173 automated tests passing (`python -m pytest -v`)
 - [x] Pylint clean (`python -m pylint app tests config.py`)
 - [x] CI workflow passing on GitHub Actions

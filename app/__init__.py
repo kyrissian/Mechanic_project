@@ -9,8 +9,23 @@ MySQL database or interfering with a separately-running dev server.
 """
 
 from flask import Flask
+from flask_swagger_ui import get_swaggerui_blueprint
+
 from app.extensions import cache, db, limiter, ma
 from config import DevelopmentConfig
+
+# URL where the interactive Swagger UI page itself is served, and the
+# path to the raw OpenAPI/Swagger spec it reads from -- app/static/
+# is served automatically by Flask, so /static/swagger.yaml just
+# works without any extra route needed.
+SWAGGER_URL = "/api/docs"
+API_URL = "/static/swagger.yaml"
+
+swaggerui_blueprint = get_swaggerui_blueprint(
+    SWAGGER_URL,
+    API_URL,
+    config={"app_name": "Mechanic Shop API", "persistAuthorization": True},
+)
 
 
 def create_app(config_class=DevelopmentConfig):
@@ -65,5 +80,13 @@ def create_app(config_class=DevelopmentConfig):
 
     from app.blueprints.inventory import inventory_bp
     app.register_blueprint(inventory_bp, url_prefix="/inventory")
+
+    # Serves the interactive Swagger UI at /api/docs, reading its spec
+    # from app/static/swagger.yaml (see SWAGGER_URL/API_URL above).
+    # Registered last and separately from the resource blueprints
+    # above -- it's documentation, not an API resource, and carries no
+    # url_prefix of its own since get_swaggerui_blueprint already
+    # mounts it at SWAGGER_URL internally.
+    app.register_blueprint(swaggerui_blueprint, url_prefix=SWAGGER_URL)
 
     return app

@@ -1,0 +1,1790 @@
+swagger: "2.0"
+info:
+  title: "Mechanic Shop API"
+  description: >
+    A REST API for a mechanic shop, with role-based JWT authentication
+    (customer, mechanic, manager), a service-ticket lifecycle (status,
+    cost, and parts), stock-aware inventory, rate limiting, and
+    caching. Built on Flask, SQLAlchemy, and Marshmallow.
+  version: "1.0.0"
+host: "127.0.0.1:5000"
+schemes:
+  - "http"
+consumes:
+  - "application/json"
+produces:
+  - "application/json"
+
+securityDefinitions:
+  customerAuth:
+    type: apiKey
+    name: Authorization
+    in: header
+    description: >
+      A customer's token, obtained from POST /customers/login. In the
+      "Authorize" box above, type the literal word "Bearer", a space,
+      then the token -- e.g. "Bearer eyJhbGci..." -- not the token
+      alone, or the server will reject it as missing. Grants access
+      only to routes scoped to that customer's own account and
+      tickets -- never another customer's data, and never
+      mechanic-only routes.
+  mechanicAuth:
+    type: apiKey
+    name: Authorization
+    in: header
+    description: >
+      A mechanic's token, obtained from POST /mechanics/login. In the
+      "Authorize" box above, type the literal word "Bearer", a space,
+      then the token -- e.g. "Bearer eyJhbGci..." -- not the token
+      alone, or the server will reject it as missing. The token
+      carries the mechanic's role, but access for manager-only and
+      assignment-gated routes is enforced server-side on the CURRENT
+      role/assignment at request time, not on anything baked into the
+      token itself -- see each route's description for its exact
+      requirement (any mechanic, manager only, or the specific
+      mechanic assigned to that ticket).
+
+paths:
+  /customers:
+    post:
+      tags:
+        - Customer
+      summary: "Register a new customer."
+      description: >
+        Creates a customer account with a hashed password. No
+        authentication required -- this IS how a customer gets an
+        account. Rate limited to 5 requests per hour per client IP:
+        creation is the write path most open to abuse, and rejected
+        (400) attempts still count toward the limit, which is what
+        stops probing for registered emails.
+      parameters:
+        - in: "body"
+          name: "body"
+          description: "New customer's details and chosen password."
+          required: true
+          schema:
+            $ref: "#/definitions/CustomerPayload"
+      responses:
+        201:
+          description: "Customer created successfully."
+          schema:
+            $ref: "#/definitions/CustomerResponse"
+          examples:
+            application/json:
+              id: 1
+              name: "Jamie Rivera"
+              email: "jamie@example.com"
+              phone: "555-123-4567"
+        400:
+          description: >
+            Validation failed (missing/invalid field), OR the email is
+            already associated with an account.
+          schema:
+            $ref: "#/definitions/ValidationErrorResponse"
+          examples:
+            application/json:
+              error: "Validation failed."
+              details:
+                email: ["Missing data for required field."]
+        429:
+          description: "Rate limit exceeded (5 per hour per IP)."
+          schema:
+            $ref: "#/definitions/RateLimitErrorResponse"
+
+    get:
+      tags:
+        - Customer
+      summary: "List active customers (paginated)."
+      description: >
+        Requires being logged in as any mechanic -- customer records
+        contain personal data, so this is staff-only, not public.
+        Closed (soft-deleted) accounts are excluded from both the
+        results and the total.
+      security:
+        - mechanicAuth: []
+      parameters:
+        - in: "query"
+          name: "page"
+          type: "integer"
+          required: false
+          description: "Page number, 1-indexed. Defaults to 1; invalid values fall back to 1."
+        - in: "query"
+          name: "page_size"
+          type: "integer"
+          required: false
+          description: "Results per page. Defaults to 7, capped at 50."
+      responses:
+        200:
+          description: "Paginated list of active customers."
+          schema:
+            $ref: "#/definitions/PaginatedCustomersResponse"
+        401:
+          description: "Missing, malformed, expired, or wrong-type token."
+          schema:
+            $ref: "#/definitions/ErrorResponse"
+
+  /customers/login:
+    post:
+      tags:
+        - Customer
+      summary: "Log in as a customer; returns a JWT."
+      description: >
+        Exchanges email + password for a Bearer token (valid 1 hour).
+        Rate limited to 10 requests per hour per client IP -- login is
+        a classic brute-force target, and both failed and successful
+        attempts count toward the limit. Returns the identical 401
+        message whether the email doesn't exist or the password is
+        wrong, so a client can never use the response to enumerate
+        which emails are registered. A closed (soft-deleted) account
+        cannot log in.
+      parameters:
+        - in: "body"
+          name: "body"
+          description: "Login credentials."
+          required: true
+          schema:
+            $ref: "#/definitions/LoginCredentials"
+      responses:
+        200:
+          description: "Login successful."
+          schema:
+            $ref: "#/definitions/LoginResponse"
+          examples:
+            application/json:
+              status: "success"
+              auth_token: "eyJhbGciOiJIUzI1NiIs..."
+        400:
+          description: "Validation failed (missing email or password)."
+          schema:
+            $ref: "#/definitions/ValidationErrorResponse"
+        401:
+          description: "Email not found, wrong password, or account closed."
+          schema:
+            $ref: "#/definitions/ErrorResponse"
+          examples:
+            application/json:
+              error: "Invalid email or password."
+        429:
+          description: "Rate limit exceeded (10 per hour per IP)."
+          schema:
+            $ref: "#/definitions/RateLimitErrorResponse"
+
+  /customers/my-tickets:
+    get:
+      tags:
+        - Customer
+      summary: "Get the logged-in customer's own service tickets (paginated)."
+      description: >
+        customer_id comes from the validated token, never a URL
+        parameter -- a customer can only ever see their own tickets,
+        with no id to tamper with.
+      security:
+        - customerAuth: []
+      parameters:
+        - in: "query"
+          name: "page"
+          type: "integer"
+          required: false
+          description: "Page number, 1-indexed. Defaults to 1."
+        - in: "query"
+          name: "page_size"
+          type: "integer"
+          required: false
+          description: "Results per page. Defaults to 2 (each ticket is a heavy payload), capped at 20."
+      responses:
+        200:
+          description: "Paginated list of the logged-in customer's tickets."
+          schema:
+            $ref: "#/definitions/PaginatedTicketsResponse"
+        401:
+          description: "Missing, malformed, expired, or wrong-type token; or the account is no longer active."
+          schema:
+            $ref: "#/definitions/ErrorResponse"
+
+  /customers/{customer_id}:
+    get:
+      tags:
+        - Customer
+      summary: "Get a single active customer by id."
+      description: >
+        Requires being logged in as any mechanic, same reasoning as
+        GET /customers. A closed (soft-deleted) account is reported
+        as not found.
+      security:
+        - mechanicAuth: []
+      parameters:
+        - in: "path"
+          name: "customer_id"
+          type: "integer"
+          required: true
+          description: "The customer's id."
+      responses:
+        200:
+          description: "The customer's details."
+          schema:
+            $ref: "#/definitions/CustomerResponse"
+        401:
+          description: "Missing, malformed, expired, or wrong-type token."
+          schema:
+            $ref: "#/definitions/ErrorResponse"
+        404:
+          description: "No active customer with that id."
+          schema:
+            $ref: "#/definitions/ErrorResponse"
+
+    put:
+      tags:
+        - Customer
+      summary: "Update a customer's own account."
+      description: >
+        Requires a valid customer token whose id matches customer_id
+        in the URL -- a customer can only ever update their own
+        account. Replaces name, email, phone, and password together
+        (not a partial update).
+      security:
+        - customerAuth: []
+      parameters:
+        - in: "path"
+          name: "customer_id"
+          type: "integer"
+          required: true
+          description: "Must match the id of the logged-in customer."
+        - in: "body"
+          name: "body"
+          description: "The customer's full updated details."
+          required: true
+          schema:
+            $ref: "#/definitions/CustomerPayload"
+      responses:
+        200:
+          description: "Updated customer."
+          schema:
+            $ref: "#/definitions/CustomerResponse"
+        400:
+          description: "Validation failed, OR the new email is already in use by a different customer."
+          schema:
+            $ref: "#/definitions/ValidationErrorResponse"
+        401:
+          description: "Missing, malformed, expired, or wrong-type token; or the account is no longer active."
+          schema:
+            $ref: "#/definitions/ErrorResponse"
+        403:
+          description: "The token's customer_id does not match customer_id in the URL."
+          schema:
+            $ref: "#/definitions/ErrorResponse"
+          examples:
+            application/json:
+              error: "You may only update your own account."
+        404:
+          description: "No active customer with that id."
+          schema:
+            $ref: "#/definitions/ErrorResponse"
+
+    delete:
+      tags:
+        - Customer
+      summary: "Close (soft-delete) a customer's own account."
+      description: >
+        Requires a valid customer token whose id matches customer_id
+        in the URL. Only succeeds if the customer has NO service
+        tickets -- accounts with service history cannot be deleted
+        online at all (409), since tickets are the shop's business
+        records. For an eligible account, this is a soft delete:
+        name/email/phone are anonymized, the account is deactivated,
+        and the original email becomes available for reuse. The
+        token used to call this (and any other token already issued
+        to this account) stops working immediately afterward.
+      security:
+        - customerAuth: []
+      parameters:
+        - in: "path"
+          name: "customer_id"
+          type: "integer"
+          required: true
+          description: "Must match the id of the logged-in customer."
+      responses:
+        200:
+          description: "Account closed."
+          schema:
+            $ref: "#/definitions/MessageResponse"
+          examples:
+            application/json:
+              message: "Customer id: 1, account closed. Personal details removed."
+        401:
+          description: "Missing, malformed, expired, or wrong-type token; or the account is no longer active."
+          schema:
+            $ref: "#/definitions/ErrorResponse"
+        403:
+          description: "The token's customer_id does not match customer_id in the URL."
+          schema:
+            $ref: "#/definitions/ErrorResponse"
+          examples:
+            application/json:
+              error: "You may only delete your own account."
+        404:
+          description: "No active customer with that id."
+          schema:
+            $ref: "#/definitions/ErrorResponse"
+        409:
+          description: "This customer has one or more service tickets and cannot be deleted online."
+          schema:
+            $ref: "#/definitions/ErrorResponse"
+          examples:
+            application/json:
+              error: "Accounts with service history can't be deleted online. Please contact the shop."
+        429:
+          description: "Rate limit exceeded (10 per hour per IP)."
+          schema:
+            $ref: "#/definitions/RateLimitErrorResponse"
+
+  /mechanics:
+    post:
+      tags:
+        - Mechanic
+      summary: "Create a new mechanic account."
+      description: >
+        Manager-only -- unlike Customer, a mechanic account cannot
+        self-register at all; only an existing manager can add staff.
+        Rate limited to 5 requests per hour per client IP.
+      security:
+        - mechanicAuth: []
+      parameters:
+        - in: "body"
+          name: "body"
+          description: "New mechanic's details, role, and chosen password."
+          required: true
+          schema:
+            $ref: "#/definitions/MechanicPayload"
+      responses:
+        201:
+          description: "Mechanic created successfully."
+          schema:
+            $ref: "#/definitions/MechanicResponse"
+          examples:
+            application/json:
+              id: 2
+              name: "Alex Chen"
+              email: "alex@example.com"
+              phone: "555-987-6543"
+              salary: "55000.00"
+              role: "mechanic"
+        400:
+          description: >
+            Validation failed (missing/invalid field, or role is not
+            "mechanic"/"manager"), OR the email is already in use.
+          schema:
+            $ref: "#/definitions/ValidationErrorResponse"
+        401:
+          description: "Missing, malformed, expired, or wrong-type token."
+          schema:
+            $ref: "#/definitions/ErrorResponse"
+        403:
+          description: "Valid mechanic token, but the caller's role is not manager."
+          schema:
+            $ref: "#/definitions/ErrorResponse"
+          examples:
+            application/json:
+              error: "This action requires manager access."
+        429:
+          description: "Rate limit exceeded (5 per hour per IP)."
+          schema:
+            $ref: "#/definitions/RateLimitErrorResponse"
+
+    get:
+      tags:
+        - Mechanic
+      summary: "List all mechanics, including salary (paginated)."
+      description: >
+        Manager-only -- a regular mechanic has no legitimate reason to
+        see every other mechanic's pay. The one cached route in this
+        API (60 seconds); each page/page_size combination has its own
+        cache entry, and any create/update/delete clears the whole
+        cache so a write is never masked by a stale page.
+      security:
+        - mechanicAuth: []
+      parameters:
+        - in: "query"
+          name: "page"
+          type: "integer"
+          required: false
+          description: "Page number, 1-indexed. Defaults to 1."
+        - in: "query"
+          name: "page_size"
+          type: "integer"
+          required: false
+          description: "Results per page. Defaults to 5, capped at 25."
+      responses:
+        200:
+          description: "Paginated list of mechanics, including salary."
+          schema:
+            $ref: "#/definitions/PaginatedMechanicsResponse"
+        401:
+          description: "Missing, malformed, expired, or wrong-type token."
+          schema:
+            $ref: "#/definitions/ErrorResponse"
+        403:
+          description: "Valid mechanic token, but the caller's role is not manager."
+          schema:
+            $ref: "#/definitions/ErrorResponse"
+
+  /mechanics/login:
+    post:
+      tags:
+        - Mechanic
+      summary: "Log in as a mechanic; returns a JWT carrying the mechanic's role."
+      description: >
+        Exchanges email + password for a Bearer token (valid 1 hour).
+        Rate limited to 10 requests per hour per client IP. Returns
+        the identical 401 message whether the email doesn't exist or
+        the password is wrong. NOTE: the role actually used for
+        authorization on every subsequent request is re-read from the
+        database on each request, not taken from this token's claims
+        -- a promotion or demotion takes effect on the mechanic's very
+        next request, not their next login.
+      parameters:
+        - in: "body"
+          name: "body"
+          description: "Login credentials."
+          required: true
+          schema:
+            $ref: "#/definitions/LoginCredentials"
+      responses:
+        200:
+          description: "Login successful."
+          schema:
+            $ref: "#/definitions/LoginResponse"
+          examples:
+            application/json:
+              status: "success"
+              auth_token: "eyJhbGciOiJIUzI1NiIs..."
+        400:
+          description: "Validation failed (missing email or password)."
+          schema:
+            $ref: "#/definitions/ValidationErrorResponse"
+        401:
+          description: "Email not found or wrong password."
+          schema:
+            $ref: "#/definitions/ErrorResponse"
+          examples:
+            application/json:
+              error: "Invalid email or password."
+        429:
+          description: "Rate limit exceeded (10 per hour per IP)."
+          schema:
+            $ref: "#/definitions/RateLimitErrorResponse"
+
+  /mechanics/most-tickets:
+    get:
+      tags:
+        - Mechanic
+      summary: "Mechanics sorted by total tickets ever worked."
+      description: >
+        Available to any logged-in mechanic. Response deliberately
+        excludes salary. Most tickets first by default. Not cached --
+        it depends on shop-wide ticket-assignment activity, which
+        changes constantly.
+      security:
+        - mechanicAuth: []
+      parameters:
+        - in: "query"
+          name: "order"
+          type: "string"
+          enum: ["asc", "desc"]
+          required: false
+          description: "desc (default) = most tickets first; asc = fewest first."
+      responses:
+        200:
+          description: "Mechanics sorted by total ticket count."
+          schema:
+            type: "array"
+            items:
+              $ref: "#/definitions/MechanicTicketCountSummary"
+        401:
+          description: "Missing, malformed, expired, or wrong-type token."
+          schema:
+            $ref: "#/definitions/ErrorResponse"
+
+  /mechanics/open-tickets:
+    get:
+      tags:
+        - Mechanic
+      summary: "Mechanics sorted by current open ticket count."
+      description: >
+        Open = Pending, In Progress, or Completed but not yet paid --
+        a rough measure of current workload. Available to any
+        logged-in mechanic. Response excludes salary. Most open
+        tickets first by default.
+      security:
+        - mechanicAuth: []
+      parameters:
+        - in: "query"
+          name: "order"
+          type: "string"
+          enum: ["asc", "desc"]
+          required: false
+          description: "desc (default) = most open tickets first; asc = fewest first."
+      responses:
+        200:
+          description: "Mechanics sorted by open ticket count."
+          schema:
+            type: "array"
+            items:
+              $ref: "#/definitions/MechanicOpenTicketSummary"
+        401:
+          description: "Missing, malformed, expired, or wrong-type token."
+          schema:
+            $ref: "#/definitions/ErrorResponse"
+
+  /mechanics/closed-tickets:
+    get:
+      tags:
+        - Mechanic
+      summary: "Mechanics sorted by closed ticket count."
+      description: >
+        Closed = Paid or Picked Up -- a rough measure of completed,
+        paid-for work. Available to any logged-in mechanic. Response
+        excludes salary. Most closed tickets first by default.
+      security:
+        - mechanicAuth: []
+      parameters:
+        - in: "query"
+          name: "order"
+          type: "string"
+          enum: ["asc", "desc"]
+          required: false
+          description: "desc (default) = most closed tickets first; asc = fewest first."
+      responses:
+        200:
+          description: "Mechanics sorted by closed ticket count."
+          schema:
+            type: "array"
+            items:
+              $ref: "#/definitions/MechanicClosedTicketSummary"
+        401:
+          description: "Missing, malformed, expired, or wrong-type token."
+          schema:
+            $ref: "#/definitions/ErrorResponse"
+
+  /mechanics/{mechanic_id}:
+    get:
+      tags:
+        - Mechanic
+      summary: "Get a single mechanic by id, including salary."
+      description: >
+        A manager may look up any mechanic. A regular mechanic may
+        only look up their OWN profile (403 otherwise) -- checked
+        before the database is even queried. Not cached, since
+        caching by both target id and requester would make
+        invalidation unreliable.
+      security:
+        - mechanicAuth: []
+      parameters:
+        - in: "path"
+          name: "mechanic_id"
+          type: "integer"
+          required: true
+          description: "The mechanic's id."
+      responses:
+        200:
+          description: "The mechanic's details, including salary."
+          schema:
+            $ref: "#/definitions/MechanicResponse"
+        401:
+          description: "Missing, malformed, expired, or wrong-type token."
+          schema:
+            $ref: "#/definitions/ErrorResponse"
+        403:
+          description: "A non-manager requesting a profile other than their own."
+          schema:
+            $ref: "#/definitions/ErrorResponse"
+          examples:
+            application/json:
+              error: "You may only view your own profile."
+        404:
+          description: "No mechanic with that id."
+          schema:
+            $ref: "#/definitions/ErrorResponse"
+
+    put:
+      tags:
+        - Mechanic
+      summary: "Update a mechanic's account."
+      description: >
+        Manager-only -- updating a mechanic's role or salary is a
+        roster-management decision. Replaces name, email, phone,
+        salary, password, and role together (not a partial update).
+      security:
+        - mechanicAuth: []
+      parameters:
+        - in: "path"
+          name: "mechanic_id"
+          type: "integer"
+          required: true
+          description: "The mechanic's id."
+        - in: "body"
+          name: "body"
+          description: "The mechanic's full updated details."
+          required: true
+          schema:
+            $ref: "#/definitions/MechanicPayload"
+      responses:
+        200:
+          description: "Updated mechanic."
+          schema:
+            $ref: "#/definitions/MechanicResponse"
+        400:
+          description: "Validation failed, OR the new email is already in use."
+          schema:
+            $ref: "#/definitions/ValidationErrorResponse"
+        401:
+          description: "Missing, malformed, expired, or wrong-type token."
+          schema:
+            $ref: "#/definitions/ErrorResponse"
+        403:
+          description: "Valid mechanic token, but the caller's role is not manager."
+          schema:
+            $ref: "#/definitions/ErrorResponse"
+        404:
+          description: "No mechanic with that id."
+          schema:
+            $ref: "#/definitions/ErrorResponse"
+
+    delete:
+      tags:
+        - Mechanic
+      summary: "Delete a mechanic account."
+      description: >
+        Manager-only. Rate limited to 10 requests per hour per client
+        IP, since deletion is destructive. This is a hard delete, not
+        a soft one like Customer -- a mechanic's token stops working
+        immediately afterward regardless, since every mechanic-
+        authenticated request re-reads the account from the database.
+      security:
+        - mechanicAuth: []
+      parameters:
+        - in: "path"
+          name: "mechanic_id"
+          type: "integer"
+          required: true
+          description: "The mechanic's id."
+      responses:
+        200:
+          description: "Mechanic deleted."
+          schema:
+            $ref: "#/definitions/MessageResponse"
+          examples:
+            application/json:
+              message: "Mechanic id: 2, successfully deleted."
+        401:
+          description: "Missing, malformed, expired, or wrong-type token."
+          schema:
+            $ref: "#/definitions/ErrorResponse"
+        403:
+          description: "Valid mechanic token, but the caller's role is not manager."
+          schema:
+            $ref: "#/definitions/ErrorResponse"
+        404:
+          description: "No mechanic with that id."
+          schema:
+            $ref: "#/definitions/ErrorResponse"
+        429:
+          description: "Rate limit exceeded (10 per hour per IP)."
+          schema:
+            $ref: "#/definitions/RateLimitErrorResponse"
+
+  /service-tickets:
+    post:
+      tags:
+        - Service Ticket
+      summary: "Create a new service ticket."
+      description: >
+        Manager-only -- creation sets cost and description up front,
+        both otherwise manager-controlled elsewhere in this resource.
+        status defaults to "Pending" server-side and is not accepted
+        as input here.
+      security:
+        - mechanicAuth: []
+      parameters:
+        - in: "body"
+          name: "body"
+          description: "New ticket's details."
+          required: true
+          schema:
+            $ref: "#/definitions/ServiceTicketPayload"
+      responses:
+        201:
+          description: "Ticket created successfully."
+          schema:
+            $ref: "#/definitions/ServiceTicketResponse"
+          examples:
+            application/json:
+              id: 1
+              vin: "1HGCM82633A004352"
+              service_date: "2026-01-05"
+              service_desc: "Brake pad replacement"
+              status: "Pending"
+              cost: "450.00"
+              customer_id: 1
+              mechanic_ids: []
+              parts: []
+        400:
+          description: >
+            Validation failed -- including vin not being exactly 17
+            uppercase alphanumeric characters excluding I/O/Q, per
+            ISO 3779.
+          schema:
+            $ref: "#/definitions/ValidationErrorResponse"
+        401:
+          description: "Missing, malformed, expired, or wrong-type token."
+          schema:
+            $ref: "#/definitions/ErrorResponse"
+        403:
+          description: "Valid mechanic token, but the caller's role is not manager."
+          schema:
+            $ref: "#/definitions/ErrorResponse"
+        404:
+          description: "customer_id does not refer to an active customer."
+          schema:
+            $ref: "#/definitions/ErrorResponse"
+          examples:
+            application/json:
+              error: "Customer not found."
+
+    get:
+      tags:
+        - Service Ticket
+      summary: "List all service tickets (paginated)."
+      description: >
+        Available to any logged-in mechanic -- staff need visibility
+        into the full queue.
+      security:
+        - mechanicAuth: []
+      parameters:
+        - in: "query"
+          name: "page"
+          type: "integer"
+          required: false
+          description: "Page number, 1-indexed. Defaults to 1."
+        - in: "query"
+          name: "page_size"
+          type: "integer"
+          required: false
+          description: "Results per page. Defaults to 3 (each ticket is a heavy payload), capped at 30."
+      responses:
+        200:
+          description: "Paginated list of service tickets."
+          schema:
+            $ref: "#/definitions/PaginatedTicketsResponse"
+        401:
+          description: "Missing, malformed, expired, or wrong-type token."
+          schema:
+            $ref: "#/definitions/ErrorResponse"
+
+  /service-tickets/my-tickets:
+    get:
+      tags:
+        - Service Ticket
+      summary: "Get tickets the logged-in mechanic is assigned to (paginated)."
+      description: >
+        mechanic_id comes from the validated token, never a URL
+        parameter -- a mechanic can only ever see their own assigned
+        tickets this way.
+      security:
+        - mechanicAuth: []
+      parameters:
+        - in: "query"
+          name: "page"
+          type: "integer"
+          required: false
+          description: "Page number, 1-indexed. Defaults to 1."
+        - in: "query"
+          name: "page_size"
+          type: "integer"
+          required: false
+          description: "Results per page. Defaults to 2, capped at 20."
+      responses:
+        200:
+          description: "Paginated list of the logged-in mechanic's assigned tickets."
+          schema:
+            $ref: "#/definitions/PaginatedTicketsResponse"
+        401:
+          description: "Missing, malformed, expired, or wrong-type token."
+          schema:
+            $ref: "#/definitions/ErrorResponse"
+
+  /service-tickets/{ticket_id}:
+    get:
+      tags:
+        - Service Ticket
+      summary: "Get a single service ticket by id."
+      description: "Available to any logged-in mechanic."
+      security:
+        - mechanicAuth: []
+      parameters:
+        - in: "path"
+          name: "ticket_id"
+          type: "integer"
+          required: true
+          description: "The ticket's id."
+      responses:
+        200:
+          description: "The ticket's details, including assigned mechanics and parts."
+          schema:
+            $ref: "#/definitions/ServiceTicketResponse"
+        401:
+          description: "Missing, malformed, expired, or wrong-type token."
+          schema:
+            $ref: "#/definitions/ErrorResponse"
+        404:
+          description: "No ticket with that id."
+          schema:
+            $ref: "#/definitions/ErrorResponse"
+
+    put:
+      tags:
+        - Service Ticket
+      summary: "Update a ticket's description and/or cost."
+      description: >
+        Manager-only. A partial update: service_desc and cost may be
+        sent individually or together, but the body must include AT
+        LEAST ONE of them -- an empty body is rejected (400) rather
+        than silently succeeding and changing nothing.
+      security:
+        - mechanicAuth: []
+      parameters:
+        - in: "path"
+          name: "ticket_id"
+          type: "integer"
+          required: true
+          description: "The ticket's id."
+        - in: "body"
+          name: "body"
+          description: "service_desc and/or cost -- at least one required."
+          required: true
+          schema:
+            $ref: "#/definitions/TicketDetailsUpdatePayload"
+      responses:
+        200:
+          description: "Updated ticket."
+          schema:
+            $ref: "#/definitions/ServiceTicketResponse"
+        400:
+          description: "Validation failed, OR neither service_desc nor cost was provided."
+          schema:
+            $ref: "#/definitions/ErrorResponse"
+          examples:
+            application/json:
+              error: "Provide service_desc and/or cost to update."
+        401:
+          description: "Missing, malformed, expired, or wrong-type token."
+          schema:
+            $ref: "#/definitions/ErrorResponse"
+        403:
+          description: "Valid mechanic token, but the caller's role is not manager."
+          schema:
+            $ref: "#/definitions/ErrorResponse"
+        404:
+          description: "No ticket with that id."
+          schema:
+            $ref: "#/definitions/ErrorResponse"
+
+  /service-tickets/{ticket_id}/status:
+    put:
+      tags:
+        - Service Ticket
+      summary: "Update a ticket's status."
+      description: >
+        Allowed for a manager (any ticket), or for a mechanic who is
+        actually assigned to THIS specific ticket (403 otherwise) --
+        a mechanic with no connection to a job may not change its
+        status, even though status updates are otherwise open to any
+        mechanic in general.
+      security:
+        - mechanicAuth: []
+      parameters:
+        - in: "path"
+          name: "ticket_id"
+          type: "integer"
+          required: true
+          description: "The ticket's id."
+        - in: "body"
+          name: "body"
+          description: "The new status."
+          required: true
+          schema:
+            $ref: "#/definitions/StatusUpdatePayload"
+      responses:
+        200:
+          description: "Updated ticket."
+          schema:
+            $ref: "#/definitions/ServiceTicketResponse"
+        400:
+          description: "status is missing or not one of the five valid values."
+          schema:
+            $ref: "#/definitions/ValidationErrorResponse"
+        401:
+          description: "Missing, malformed, expired, or wrong-type token."
+          schema:
+            $ref: "#/definitions/ErrorResponse"
+        403:
+          description: "A mechanic (non-manager) who is not assigned to this ticket."
+          schema:
+            $ref: "#/definitions/ErrorResponse"
+          examples:
+            application/json:
+              error: "You may only update the status of tickets you are assigned to."
+        404:
+          description: "No ticket with that id."
+          schema:
+            $ref: "#/definitions/ErrorResponse"
+
+  /service-tickets/{ticket_id}/assign-mechanic/{mechanic_id}:
+    put:
+      tags:
+        - Service Ticket
+      summary: "Assign one mechanic to a ticket."
+      description: "Manager-only."
+      security:
+        - mechanicAuth: []
+      parameters:
+        - in: "path"
+          name: "ticket_id"
+          type: "integer"
+          required: true
+          description: "The ticket's id."
+        - in: "path"
+          name: "mechanic_id"
+          type: "integer"
+          required: true
+          description: "The mechanic's id."
+      responses:
+        200:
+          description: "Updated ticket, with the mechanic now in mechanic_ids."
+          schema:
+            $ref: "#/definitions/ServiceTicketResponse"
+        400:
+          description: "This mechanic is already assigned to this ticket."
+          schema:
+            $ref: "#/definitions/ErrorResponse"
+          examples:
+            application/json:
+              error: "Mechanic is already assigned to this ticket."
+        401:
+          description: "Missing, malformed, expired, or wrong-type token."
+          schema:
+            $ref: "#/definitions/ErrorResponse"
+        403:
+          description: "Valid mechanic token, but the caller's role is not manager."
+          schema:
+            $ref: "#/definitions/ErrorResponse"
+        404:
+          description: "No ticket with that id, or no mechanic with that id."
+          schema:
+            $ref: "#/definitions/ErrorResponse"
+
+  /service-tickets/{ticket_id}/remove-mechanic/{mechanic_id}:
+    put:
+      tags:
+        - Service Ticket
+      summary: "Remove one mechanic from a ticket."
+      description: "Manager-only."
+      security:
+        - mechanicAuth: []
+      parameters:
+        - in: "path"
+          name: "ticket_id"
+          type: "integer"
+          required: true
+          description: "The ticket's id."
+        - in: "path"
+          name: "mechanic_id"
+          type: "integer"
+          required: true
+          description: "The mechanic's id."
+      responses:
+        200:
+          description: "Updated ticket, with the mechanic no longer in mechanic_ids."
+          schema:
+            $ref: "#/definitions/ServiceTicketResponse"
+        400:
+          description: "This mechanic is not assigned to this ticket."
+          schema:
+            $ref: "#/definitions/ErrorResponse"
+          examples:
+            application/json:
+              error: "Mechanic is not assigned to this ticket."
+        401:
+          description: "Missing, malformed, expired, or wrong-type token."
+          schema:
+            $ref: "#/definitions/ErrorResponse"
+        403:
+          description: "Valid mechanic token, but the caller's role is not manager."
+          schema:
+            $ref: "#/definitions/ErrorResponse"
+        404:
+          description: "No ticket with that id, or no mechanic with that id."
+          schema:
+            $ref: "#/definitions/ErrorResponse"
+
+  /service-tickets/{ticket_id}/edit:
+    put:
+      tags:
+        - Service Ticket
+      summary: "Bulk add and/or remove mechanics from a ticket."
+      description: >
+        Manager-only. Idempotent by design: adding an already-
+        assigned mechanic, or removing one who isn't assigned, is
+        silently skipped rather than treated as an error. A mechanic
+        id that doesn't exist at all is still a real 404, checked for
+        BEFORE any change is applied, so a bad id never leaves the
+        ticket half-updated.
+      security:
+        - mechanicAuth: []
+      parameters:
+        - in: "path"
+          name: "ticket_id"
+          type: "integer"
+          required: true
+          description: "The ticket's id."
+        - in: "body"
+          name: "body"
+          description: "Mechanic ids to add and/or remove. Both default to an empty list."
+          required: true
+          schema:
+            $ref: "#/definitions/TicketMechanicEditPayload"
+      responses:
+        200:
+          description: "Updated ticket."
+          schema:
+            $ref: "#/definitions/ServiceTicketResponse"
+        401:
+          description: "Missing, malformed, expired, or wrong-type token."
+          schema:
+            $ref: "#/definitions/ErrorResponse"
+        403:
+          description: "Valid mechanic token, but the caller's role is not manager."
+          schema:
+            $ref: "#/definitions/ErrorResponse"
+        404:
+          description: "No ticket with that id, OR one of the mechanic ids in add_ids/remove_ids does not exist."
+          schema:
+            $ref: "#/definitions/ErrorResponse"
+          examples:
+            application/json:
+              error: "Mechanic id 999 not found."
+
+  /service-tickets/{ticket_id}/add-part/{inventory_id}:
+    put:
+      tags:
+        - Service Ticket
+      summary: "Add a part to a ticket."
+      description: >
+        Open to a manager, or to a mechanic who is assigned to this
+        specific ticket (403 otherwise). quantity defaults to 1 if
+        the body is omitted entirely. If this part is already on the
+        ticket, the existing line's quantity is increased rather than
+        a duplicate line being created. The part's CURRENT catalog
+        price is copied onto the line as unit_price at the moment
+        it's added, and that snapshot never changes even if the
+        part's price changes later. Refuses to allocate more than
+        the part's current quantity_on_hand in Inventory (400, naming
+        exactly how many are actually available), and decrements
+        quantity_on_hand by whatever is allocated on success.
+      security:
+        - mechanicAuth: []
+      parameters:
+        - in: "path"
+          name: "ticket_id"
+          type: "integer"
+          required: true
+          description: "The ticket's id."
+        - in: "path"
+          name: "inventory_id"
+          type: "integer"
+          required: true
+          description: "The part's id."
+        - in: "body"
+          name: "body"
+          description: "How many of the part to add. Omit the body entirely for the default of 1."
+          required: false
+          schema:
+            $ref: "#/definitions/AddPartPayload"
+      responses:
+        200:
+          description: "Updated ticket, with the part reflected in its parts list."
+          schema:
+            $ref: "#/definitions/ServiceTicketResponse"
+        400:
+          description: >
+            quantity is below 1, OR the requested quantity exceeds
+            the part's current stock.
+          schema:
+            $ref: "#/definitions/ErrorResponse"
+          examples:
+            application/json:
+              error: "Not enough Brake Rotor in stock. Requested 4, only 3 available."
+        401:
+          description: "Missing, malformed, expired, or wrong-type token."
+          schema:
+            $ref: "#/definitions/ErrorResponse"
+        403:
+          description: "A mechanic (non-manager) who is not assigned to this ticket."
+          schema:
+            $ref: "#/definitions/ErrorResponse"
+          examples:
+            application/json:
+              error: "You may only add parts to tickets you are assigned to."
+        404:
+          description: "No ticket with that id, or no part with that id."
+          schema:
+            $ref: "#/definitions/ErrorResponse"
+
+  /inventory:
+    post:
+      tags:
+        - Inventory
+      summary: "Create a new part."
+      description: "Manager-only -- prices and stock levels are a management decision."
+      security:
+        - mechanicAuth: []
+      parameters:
+        - in: "body"
+          name: "body"
+          description: "New part's details."
+          required: true
+          schema:
+            $ref: "#/definitions/InventoryPayload"
+      responses:
+        201:
+          description: "Part created successfully."
+          schema:
+            $ref: "#/definitions/InventoryResponse"
+          examples:
+            application/json:
+              id: 1
+              name: "Oil Filter"
+              price: "12.50"
+              quantity_on_hand: 40
+        400:
+          description: >
+            Validation failed (missing/invalid field, non-positive
+            price, or negative quantity_on_hand), OR a part with this
+            name already exists (case-insensitive).
+          schema:
+            $ref: "#/definitions/ValidationErrorResponse"
+        401:
+          description: "Missing, malformed, expired, or wrong-type token."
+          schema:
+            $ref: "#/definitions/ErrorResponse"
+        403:
+          description: "Valid mechanic token, but the caller's role is not manager."
+          schema:
+            $ref: "#/definitions/ErrorResponse"
+
+    get:
+      tags:
+        - Inventory
+      summary: "List all parts (paginated)."
+      description: "Available to any logged-in mechanic -- staff need part names, prices, and stock to do their work."
+      security:
+        - mechanicAuth: []
+      parameters:
+        - in: "query"
+          name: "page"
+          type: "integer"
+          required: false
+          description: "Page number, 1-indexed. Defaults to 1."
+        - in: "query"
+          name: "page_size"
+          type: "integer"
+          required: false
+          description: "Results per page. Defaults to 5, capped at 25."
+      responses:
+        200:
+          description: "Paginated list of parts."
+          schema:
+            $ref: "#/definitions/PaginatedInventoryResponse"
+        401:
+          description: "Missing, malformed, expired, or wrong-type token."
+          schema:
+            $ref: "#/definitions/ErrorResponse"
+
+  /inventory/{inventory_id}:
+    get:
+      tags:
+        - Inventory
+      summary: "Get a single part by id."
+      description: "Available to any logged-in mechanic."
+      security:
+        - mechanicAuth: []
+      parameters:
+        - in: "path"
+          name: "inventory_id"
+          type: "integer"
+          required: true
+          description: "The part's id."
+      responses:
+        200:
+          description: "The part's details, including current stock."
+          schema:
+            $ref: "#/definitions/InventoryResponse"
+        401:
+          description: "Missing, malformed, expired, or wrong-type token."
+          schema:
+            $ref: "#/definitions/ErrorResponse"
+        404:
+          description: "No part with that id."
+          schema:
+            $ref: "#/definitions/ErrorResponse"
+
+    put:
+      tags:
+        - Inventory
+      summary: "Update a part's name, price, and/or stock."
+      description: >
+        Manager-only. Replaces name, price, and quantity_on_hand
+        together (not a partial update) -- e.g. used to adjust stock
+        after receiving a new shipment. Changing a part's price never
+        rewrites the unit_price already recorded on past ticket
+        lines; only future additions use the new price.
+      security:
+        - mechanicAuth: []
+      parameters:
+        - in: "path"
+          name: "inventory_id"
+          type: "integer"
+          required: true
+          description: "The part's id."
+        - in: "body"
+          name: "body"
+          description: "The part's full updated details."
+          required: true
+          schema:
+            $ref: "#/definitions/InventoryPayload"
+      responses:
+        200:
+          description: "Updated part."
+          schema:
+            $ref: "#/definitions/InventoryResponse"
+        400:
+          description: "Validation failed, OR the new name is already in use by a different part."
+          schema:
+            $ref: "#/definitions/ValidationErrorResponse"
+        401:
+          description: "Missing, malformed, expired, or wrong-type token."
+          schema:
+            $ref: "#/definitions/ErrorResponse"
+        403:
+          description: "Valid mechanic token, but the caller's role is not manager."
+          schema:
+            $ref: "#/definitions/ErrorResponse"
+        404:
+          description: "No part with that id."
+          schema:
+            $ref: "#/definitions/ErrorResponse"
+
+    delete:
+      tags:
+        - Inventory
+      summary: "Delete a part."
+      description: >
+        Manager-only. Rate limited to 10 requests per hour per client
+        IP, since deletion is destructive. A part that has been used
+        on ANY ticket cannot be deleted (409) -- the same "history
+        stays" principle applied to customer accounts and tickets
+        themselves. Renaming or repricing a used part is still always
+        allowed; only deletion is blocked.
+      security:
+        - mechanicAuth: []
+      parameters:
+        - in: "path"
+          name: "inventory_id"
+          type: "integer"
+          required: true
+          description: "The part's id."
+      responses:
+        200:
+          description: "Part deleted."
+          schema:
+            $ref: "#/definitions/MessageResponse"
+          examples:
+            application/json:
+              message: "Part id: 11, successfully deleted."
+        401:
+          description: "Missing, malformed, expired, or wrong-type token."
+          schema:
+            $ref: "#/definitions/ErrorResponse"
+        403:
+          description: "Valid mechanic token, but the caller's role is not manager."
+          schema:
+            $ref: "#/definitions/ErrorResponse"
+        404:
+          description: "No part with that id."
+          schema:
+            $ref: "#/definitions/ErrorResponse"
+        409:
+          description: "This part has been used on one or more tickets and cannot be deleted."
+          schema:
+            $ref: "#/definitions/ErrorResponse"
+          examples:
+            application/json:
+              error: "This part has been used on a ticket and cannot be deleted."
+        429:
+          description: "Rate limit exceeded (10 per hour per IP)."
+          schema:
+            $ref: "#/definitions/RateLimitErrorResponse"
+
+definitions:
+  # ---- Shared error shapes, used across every resource ----
+
+  ErrorResponse:
+    type: "object"
+    properties:
+      error:
+        type: "string"
+    required:
+      - error
+
+  ValidationErrorResponse:
+    type: "object"
+    description: >
+      Returned by every create/update route when Marshmallow
+      validation fails. details mirrors Marshmallow's own field-by-
+      field message dict.
+    properties:
+      error:
+        type: "string"
+        example: "Validation failed."
+      details:
+        type: "object"
+        description: "Field name -> list of error messages for that field."
+    required:
+      - error
+      - details
+
+  RateLimitErrorResponse:
+    type: "object"
+    properties:
+      error:
+        type: "string"
+        example: "Rate limit exceeded"
+      detail:
+        type: "string"
+        description: "The specific limit that was hit, e.g. '5 per 1 hour'."
+    required:
+      - error
+      - detail
+
+  MessageResponse:
+    type: "object"
+    properties:
+      message:
+        type: "string"
+    required:
+      - message
+
+  # ---- Customer ----
+
+  CustomerPayload:
+    type: "object"
+    description: "Used for both account creation and a full update."
+    properties:
+      name:
+        type: "string"
+      email:
+        type: "string"
+      phone:
+        type: "string"
+      password:
+        type: "string"
+        description: "Plaintext on input only -- hashed before storage, never returned in any response."
+    required:
+      - name
+      - email
+      - phone
+      - password
+
+  CustomerResponse:
+    type: "object"
+    properties:
+      id:
+        type: "integer"
+      name:
+        type: "string"
+      email:
+        type: "string"
+      phone:
+        type: "string"
+    required:
+      - id
+      - name
+      - email
+      - phone
+
+  PaginatedCustomersResponse:
+    type: "object"
+    properties:
+      customers:
+        type: "array"
+        items:
+          $ref: "#/definitions/CustomerResponse"
+      total:
+        type: "integer"
+      page:
+        type: "integer"
+      page_size:
+        type: "integer"
+      total_pages:
+        type: "integer"
+    required:
+      - customers
+      - total
+      - page
+      - page_size
+      - total_pages
+
+  LoginCredentials:
+    type: "object"
+    properties:
+      email:
+        type: "string"
+      password:
+        type: "string"
+    required:
+      - email
+      - password
+
+  LoginResponse:
+    type: "object"
+    properties:
+      status:
+        type: "string"
+        example: "success"
+      auth_token:
+        type: "string"
+    required:
+      - status
+      - auth_token
+
+  # ---- Mechanic ----
+
+  MechanicPayload:
+    type: "object"
+    description: "Used for both account creation and a full update."
+    properties:
+      name:
+        type: "string"
+      email:
+        type: "string"
+      phone:
+        type: "string"
+      salary:
+        type: "string"
+        description: "Decimal, accepted as a number or string on input."
+      password:
+        type: "string"
+        description: "Plaintext on input only -- hashed before storage, never returned in any response."
+      role:
+        type: "string"
+        enum: ["mechanic", "manager"]
+    required:
+      - name
+      - email
+      - phone
+      - salary
+      - password
+      - role
+
+  MechanicResponse:
+    type: "object"
+    properties:
+      id:
+        type: "integer"
+      name:
+        type: "string"
+      email:
+        type: "string"
+      phone:
+        type: "string"
+      salary:
+        type: "string"
+        description: 'Decimal, as a fixed 2-place string, e.g. "55000.00".'
+      role:
+        type: "string"
+        enum: ["mechanic", "manager"]
+    required:
+      - id
+      - name
+      - email
+      - phone
+      - salary
+      - role
+
+  PaginatedMechanicsResponse:
+    type: "object"
+    properties:
+      mechanics:
+        type: "array"
+        items:
+          $ref: "#/definitions/MechanicResponse"
+      total:
+        type: "integer"
+      page:
+        type: "integer"
+      page_size:
+        type: "integer"
+      total_pages:
+        type: "integer"
+    required:
+      - mechanics
+      - total
+      - page
+      - page_size
+      - total_pages
+
+  MechanicTicketCountSummary:
+    type: "object"
+    description: "Deliberately excludes salary -- used by the sorting endpoints, open to any mechanic."
+    properties:
+      id:
+        type: "integer"
+      name:
+        type: "string"
+      ticket_count:
+        type: "integer"
+    required:
+      - id
+      - name
+      - ticket_count
+
+  MechanicOpenTicketSummary:
+    type: "object"
+    properties:
+      id:
+        type: "integer"
+      name:
+        type: "string"
+      open_ticket_count:
+        type: "integer"
+    required:
+      - id
+      - name
+      - open_ticket_count
+
+  MechanicClosedTicketSummary:
+    type: "object"
+    properties:
+      id:
+        type: "integer"
+      name:
+        type: "string"
+      closed_ticket_count:
+        type: "integer"
+    required:
+      - id
+      - name
+      - closed_ticket_count
+
+  # ---- ServiceTicket ----
+
+  ServiceTicketPayload:
+    type: "object"
+    description: >
+      Used to create a new ticket. status is not accepted here -- it
+      always defaults to "Pending" and is changed only via the
+      dedicated /status route.
+    properties:
+      customer_id:
+        type: "integer"
+      vin:
+        type: "string"
+        description: "Exactly 17 uppercase alphanumeric characters, excluding I, O, and Q (ISO 3779)."
+      service_date:
+        type: "string"
+        format: "date"
+      service_desc:
+        type: "string"
+      cost:
+        type: "string"
+        description: "Decimal, accepted as a number or string on input."
+    required:
+      - customer_id
+      - vin
+      - service_date
+      - service_desc
+      - cost
+
+  TicketDetailsUpdatePayload:
+    type: "object"
+    description: "Partial update -- at least one of service_desc or cost must be present."
+    properties:
+      service_desc:
+        type: "string"
+      cost:
+        type: "string"
+        description: "Decimal, accepted as a number or string on input."
+
+  StatusUpdatePayload:
+    type: "object"
+    properties:
+      status:
+        type: "string"
+        enum: ["Pending", "In Progress", "Completed", "Paid", "Picked Up"]
+    required:
+      - status
+
+  TicketMechanicEditPayload:
+    type: "object"
+    properties:
+      add_ids:
+        type: "array"
+        items:
+          type: "integer"
+        description: "Mechanic ids to add. Defaults to an empty list."
+      remove_ids:
+        type: "array"
+        items:
+          type: "integer"
+        description: "Mechanic ids to remove. Defaults to an empty list."
+
+  AddPartPayload:
+    type: "object"
+    properties:
+      quantity:
+        type: "integer"
+        description: "How many of the part to add. Defaults to 1 if omitted. Must be between 1 and 1000."
+
+  TicketPartLine:
+    type: "object"
+    description: "One part used on a ticket, with the price it had when it was added."
+    properties:
+      inventory_id:
+        type: "integer"
+      name:
+        type: "string"
+      quantity:
+        type: "integer"
+      unit_price:
+        type: "string"
+        description: 'Decimal, as a fixed 2-place string, e.g. "12.50".'
+      line_total:
+        type: "string"
+        description: "unit_price * quantity, as a fixed 2-place string."
+
+  ServiceTicketResponse:
+    type: "object"
+    properties:
+      id:
+        type: "integer"
+      vin:
+        type: "string"
+      service_date:
+        type: "string"
+        format: "date"
+      service_desc:
+        type: "string"
+      status:
+        type: "string"
+        enum: ["Pending", "In Progress", "Completed", "Paid", "Picked Up"]
+      cost:
+        type: "string"
+        description: 'Decimal, as a fixed 2-place string, e.g. "450.00".'
+      customer_id:
+        type: "integer"
+      mechanic_ids:
+        type: "array"
+        items:
+          type: "integer"
+      parts:
+        type: "array"
+        items:
+          $ref: "#/definitions/TicketPartLine"
+    required:
+      - id
+      - vin
+      - service_date
+      - service_desc
+      - status
+      - cost
+      - customer_id
+
+  PaginatedTicketsResponse:
+    type: "object"
+    properties:
+      tickets:
+        type: "array"
+        items:
+          $ref: "#/definitions/ServiceTicketResponse"
+      total:
+        type: "integer"
+      page:
+        type: "integer"
+      page_size:
+        type: "integer"
+      total_pages:
+        type: "integer"
+    required:
+      - tickets
+      - total
+      - page
+      - page_size
+      - total_pages
+
+  # ---- Inventory ----
+
+  InventoryPayload:
+    type: "object"
+    description: "Used for both part creation and a full update."
+    properties:
+      name:
+        type: "string"
+      price:
+        type: "string"
+        description: "Decimal, accepted as a number or string on input. Must be greater than 0."
+      quantity_on_hand:
+        type: "integer"
+        description: "How many of this part the shop currently has. Must be 0 or greater."
+    required:
+      - name
+      - price
+      - quantity_on_hand
+
+  InventoryResponse:
+    type: "object"
+    properties:
+      id:
+        type: "integer"
+      name:
+        type: "string"
+      price:
+        type: "string"
+        description: 'Decimal, as a fixed 2-place string, e.g. "12.50".'
+      quantity_on_hand:
+        type: "integer"
+    required:
+      - id
+      - name
+      - price
+      - quantity_on_hand
+
+  PaginatedInventoryResponse:
+    type: "object"
+    properties:
+      inventory:
+        type: "array"
+        items:
+          $ref: "#/definitions/InventoryResponse"
+      total:
+        type: "integer"
+      page:
+        type: "integer"
+      page_size:
+        type: "integer"
+      total_pages:
+        type: "integer"
+    required:
+      - inventory
+      - total
+      - page
+      - page_size
+      - total_pages
