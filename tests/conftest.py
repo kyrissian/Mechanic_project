@@ -35,6 +35,7 @@ from app.extensions import db as _db
 from app.models.mechanic import Mechanic
 from config import TestingConfig
 
+collect_ignore = ["unittest_suite"]
 
 class RateLimitedTestConfig(TestingConfig):
     """TestingConfig with rate limiting switched back on."""
