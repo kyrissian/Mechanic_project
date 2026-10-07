@@ -5,41 +5,20 @@ See test_customers.py's module docstring for why this file exists
 alongside the pytest suite: this one satisfies the assignment's
 literal unittest/discover requirement; the pytest suite remains the
 exhaustive day-to-day coverage.
+
+make_inventory_payload is imported from conftest.py (already used by
+the pytest inventory tests) rather than redefined here, for the same
+DRY reasoning as test_service_tickets.py importing make_ticket_payload.
 """
 
-import unittest
-
-from app import create_app
 from app.extensions import db
-from config import TestingConfig
-from tests.conftest import create_manager, create_mechanic, create_ticket
+from tests.conftest import create_manager, create_mechanic, create_ticket, make_inventory_payload
+from tests.unittest_suite.base import APITestCase
 
 
-def make_inventory_payload(**overrides):
-    """Default JSON body for creating/updating a part via the API."""
-    payload = {"name": "Oil Filter", "price": "12.50", "quantity_on_hand": 20}
-    payload.update(overrides)
-    return payload
-
-
-class TestInventory(unittest.TestCase):
+class TestInventory(APITestCase):
     """At least one success case and one failure case per /inventory
     route, per the assignment rubric."""
-
-    def setUp(self):
-        """Build a fresh app and in-memory database before each test."""
-        self.app = create_app(TestingConfig)
-        self.app_context = self.app.app_context()
-        self.app_context.push()
-        db.drop_all()
-        db.create_all()
-        self.client = self.app.test_client()
-
-    def tearDown(self):
-        """Tear down the database and app context after each test."""
-        db.session.remove()
-        db.drop_all()
-        self.app_context.pop()
 
     # POST /inventory
     def test_create_part_as_manager(self):
@@ -141,7 +120,3 @@ class TestInventory(unittest.TestCase):
         )
         response = self.client.delete(f'/inventory/{part_id}', headers=manager_headers)
         self.assertEqual(response.status_code, 409)
-
-
-if __name__ == '__main__':
-    unittest.main()

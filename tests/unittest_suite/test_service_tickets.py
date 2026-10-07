@@ -5,47 +5,29 @@ See test_customers.py's module docstring for why this file exists
 alongside the pytest suite: this one satisfies the assignment's
 literal unittest/discover requirement; the pytest suite remains the
 exhaustive day-to-day coverage.
+
+make_ticket_payload is imported from the pytest suite's own
+test_service_ticket_routes.py rather than redefined here -- the two
+were identical, which Pylint's duplicate-code check (correctly)
+flagged.
 """
 
-import unittest
-
-from app import create_app
 from app.extensions import db
-from config import TestingConfig
 from tests.conftest import create_manager, create_mechanic, create_ticket, make_customer_payload
+from tests.test_service_ticket_routes import make_ticket_payload
+from tests.unittest_suite.base import APITestCase
 
 
-def make_ticket_payload(customer_id, **overrides):
-    """Default JSON body for creating a service ticket via the API."""
-    payload = {
-        "customer_id": customer_id,
-        "vin": "1HGCM82633A004352",
-        "service_date": "2026-01-05",
-        "service_desc": "Brake pad replacement",
-        "cost": "450.00",
-    }
-    payload.update(overrides)
-    return payload
-
-
-class TestServiceTickets(unittest.TestCase):
+# pylint: disable=too-many-public-methods
+# This class holds 20 test methods, one per route/case, matching the
+# assignment's one-file-per-blueprint structure; splitting it into
+# multiple classes purely to satisfy Pylint's default method-count
+# cap would make the file harder to navigate, not easier -- a normal
+# tradeoff for test classes, which is why this check is commonly
+# disabled for them rather than restructured around.
+class TestServiceTickets(APITestCase):
     """At least one success case and one failure case per
     /service-tickets route, per the assignment rubric."""
-
-    def setUp(self):
-        """Build a fresh app and in-memory database before each test."""
-        self.app = create_app(TestingConfig)
-        self.app_context = self.app.app_context()
-        self.app_context.push()
-        db.drop_all()
-        db.create_all()
-        self.client = self.app.test_client()
-
-    def tearDown(self):
-        """Tear down the database and app context after each test."""
-        db.session.remove()
-        db.drop_all()
-        self.app_context.pop()
 
     # POST /service-tickets
     def test_create_ticket_as_manager(self):
@@ -84,7 +66,7 @@ class TestServiceTickets(unittest.TestCase):
 
     # GET /service-tickets/my-tickets
     def test_get_my_assigned_tickets(self):
-        """GET /service-tickets/my-tickets should return tickets 
+        """GET /service-tickets/my-tickets should return tickets
         assigned to the logged-in mechanic."""
         _, manager_headers = create_manager(self.client, db)
         mechanic_id, mechanic_headers = create_mechanic(self.client, manager_headers)
@@ -180,7 +162,7 @@ class TestServiceTickets(unittest.TestCase):
         self.assertIn(mechanic_id, response.json['mechanic_ids'])
 
     def test_assign_mechanic_duplicate(self):
-        """PUT /service-tickets/<id>/assign-mechanic/<id> should 
+        """PUT /service-tickets/<id>/assign-mechanic/<id> should
         return 400 for a duplicate assignment."""
         _, manager_headers = create_manager(self.client, db)
         mechanic_id, _ = create_mechanic(self.client, manager_headers)
@@ -279,7 +261,3 @@ class TestServiceTickets(unittest.TestCase):
             headers=manager_headers,
         )
         self.assertEqual(response.status_code, 400)
-
-
-if __name__ == '__main__':
-    unittest.main()

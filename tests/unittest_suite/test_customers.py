@@ -4,9 +4,9 @@ Unittest-style tests for the Customer blueprint.
 Written specifically to satisfy this assignment's rubric: unittest
 (not pytest), one file per blueprint, run via
 `python -m unittest discover tests`. The existing pytest suite in
-this same tests/ folder remains the primary, exhaustive test suite
-(173 tests, run via `pytest`) -- pytest-style function tests are
-invisible to unittest's own discovery, which only finds
+the top-level tests/ folder remains the primary, exhaustive test
+suite (173 tests, run via `pytest`) -- pytest-style function tests
+are invisible to unittest's own discovery, which only finds
 unittest.TestCase subclasses, so this file exists to make the
 assignment's literal run command actually find and run real tests.
 
@@ -17,37 +17,19 @@ helpers were never pytest-specific; they just take client/db as
 arguments, so they work identically here.
 """
 
-import unittest
-
-from app import create_app
 from app.extensions import db
-from config import TestingConfig
 from tests.conftest import (
     create_manager,
     create_ticket,
     login_customer,
     make_customer_payload,
 )
+from tests.unittest_suite.base import APITestCase
 
 
-class TestCustomers(unittest.TestCase):
+class TestCustomers(APITestCase):
     """At least one success case and one failure case per /customers
     route, per the assignment rubric."""
-
-    def setUp(self):
-        """Build a fresh app and in-memory database before each test."""
-        self.app = create_app(TestingConfig)
-        self.app_context = self.app.app_context()
-        self.app_context.push()
-        db.drop_all()
-        db.create_all()
-        self.client = self.app.test_client()
-
-    def tearDown(self):
-        """Tear down the database and app context after each test."""
-        db.session.remove()
-        db.drop_all()
-        self.app_context.pop()
 
     # POST /customers
     def test_create_customer(self):
@@ -161,7 +143,3 @@ class TestCustomers(unittest.TestCase):
         create_ticket(self.client, manager_headers, customer_id=customer_id)
         response = self.client.delete(f'/customers/{customer_id}', headers=headers)
         self.assertEqual(response.status_code, 409)
-
-
-if __name__ == '__main__':
-    unittest.main()

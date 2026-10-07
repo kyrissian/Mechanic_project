@@ -7,32 +7,14 @@ literal unittest/discover requirement; the pytest suite remains the
 exhaustive day-to-day coverage.
 """
 
-import unittest
-
-from app import create_app
 from app.extensions import db
-from config import TestingConfig
 from tests.conftest import create_manager, create_mechanic, make_mechanic_payload
+from tests.unittest_suite.base import APITestCase
 
 
-class TestMechanics(unittest.TestCase):
+class TestMechanics(APITestCase):
     """At least one success case and one failure case per /mechanics
     route, per the assignment rubric."""
-
-    def setUp(self):
-        """Build a fresh app and in-memory database before each test."""
-        self.app = create_app(TestingConfig)
-        self.app_context = self.app.app_context()
-        self.app_context.push()
-        db.drop_all()
-        db.create_all()
-        self.client = self.app.test_client()
-
-    def tearDown(self):
-        """Tear down the database and app context after each test."""
-        db.session.remove()
-        db.drop_all()
-        self.app_context.pop()
 
     # POST /mechanics
     def test_create_mechanic_as_manager(self):
@@ -134,8 +116,8 @@ class TestMechanics(unittest.TestCase):
         self.assertIn('salary', response.json)
 
     def test_get_other_mechanic_profile_forbidden(self):
-        """GET /mechanics/<id> should return 403 for a non-manager viewing 
-        someone else's profile."""
+        """GET /mechanics/<id> should return 403 for a non-manager
+        viewing someone else's profile."""
         _, manager_headers = create_manager(self.client, db)
         other_id, _ = create_mechanic(self.client, manager_headers, index=2)
         _, mechanic_headers = create_mechanic(self.client, manager_headers, index=3)
@@ -179,7 +161,3 @@ class TestMechanics(unittest.TestCase):
         _, manager_headers = create_manager(self.client, db)
         response = self.client.delete('/mechanics/999', headers=manager_headers)
         self.assertEqual(response.status_code, 404)
-
-
-if __name__ == '__main__':
-    unittest.main()
