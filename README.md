@@ -45,6 +45,13 @@ A Flask + SQLAlchemy + MySQL backend for a mechanic shop, with role-based JWT au
 
 ## Changelog
 
+### 2026-10-07: Service Layer (business logic extracted from routes)
+
+- Added `app/services/` -- one module per resource (`customer_service.py`, `mechanic_service.py`, `service_ticket_service.py`, `inventory_service.py`) holding the actual business rules that were previously written inline inside route functions: duplicate-email/name checks, the customer service-history delete policy, account anonymization, mechanic-assignment checks, stock allocation with price-snapshotting, and bulk-mechanic-id resolution.
+- Every blueprint's routes now call into this layer rather than embedding the logic directly -- a route's job is now limited to parsing the request, calling the right service function(s), and shaping the response, with the actual decision ("is this email taken," "can this part be allocated," "may this customer close their account") living in exactly one place per rule.
+- No behavior changed: every status code, error message, and response shape is identical to before this refactor. All 173 pytest tests and 62 unittest tests pass unchanged, confirming the extraction was mechanical, not a rewrite of what the API actually does.
+- Taken in response to code-review feedback suggesting a service-layer or repository-pattern refactor as a next step beyond "working API." Service layer (not repository) was chosen specifically because the routes' complexity was in business rules, not in database query construction -- most queries already went through the shared `paginate_query()` helper or a plain `db.session.get()`, so a repository layer would have had little left to abstract.
+
 ### 2026-10-05: Second Test Suite (unittest, one file per blueprint)
 
 - Added a second, `unittest`-based test suite under `tests/unittest_suite/` (`test_customers.py`, `test_mechanics.py`, `test_service_tickets.py`, `test_inventory.py`), satisfying a later assignment's literal requirement: `unittest` specifically (not `pytest`), one file per blueprint, at least one test per route, run via `python -m unittest discover tests`. The existing pytest suite (173 tests) remains the primary, exhaustive suite -- this one exists alongside it, not instead of it.
@@ -505,6 +512,14 @@ Mechanic_project/
       errors.py                 # validation_error_response() -- shared 400 envelope
       pagination.py              # paginate_query() -- shared pagination, used by
                                  # every list route across all four blueprints
+    services/
+      __init__.py
+      customer_service.py         # duplicate-email check, service-history policy,
+                                   # account anonymization
+      mechanic_service.py         # duplicate-email check, sort-endpoint helpers
+      service_ticket_service.py   # assignment checks, stock allocation + price
+                                   # snapshotting, bulk-mechanic-id resolution
+      inventory_service.py        # duplicate-name check, used-part delete block
     models/
       __init__.py
       customer.py                # includes password_hash, deleted_at
@@ -583,6 +598,7 @@ Each resource's routes and schema live together in their own folder under `app/b
 - `app/utils/util.py` holds both token flows and all three access-control decorators, so every blueprint imports from one place rather than duplicating auth logic.
 - **`manager_required`'s inner wrapper parameter is named `requester_id`, not `mechanic_id`** -- several routes it decorates (`update_mechanic`, `delete_mechanic`, `assign_mechanic`, `remove_mechanic`) have a URL parameter _also_ named `mechanic_id`. Flask passes URL parameters as keyword arguments, so if the wrapper's own parameter shared that name, Python would raise "got multiple values for argument" the moment both tried to bind to the same name -- a real bug caught while writing this feature's tests, not merely a style choice.
 - **`app/utils/pagination.py`'s `paginate_query()`** exists because four different list routes were each independently parsing `?page`/`?page_size`, counting, running the offset/limit query, and building the same response envelope -- Pylint's duplicate-code check correctly flagged that once several copies existed. Every route now just builds its own base SQLAlchemy query (with whatever `WHERE` clauses it needs) and hands it to this one function.
+- **`app/services/`** holds this project's business rules, separated from the route handlers that used to contain them inline. A route's job is now: parse the request, call the relevant service function(s), shape the response -- the actual decisions (is this email taken, can this many of this part be allocated, does this customer have service history) live in one service module per resource, independent of Flask or HTTP status codes. A service function returns data or an error description; it never calls `db.session.commit()` itself -- the calling route still owns the transaction, so a route that needs to make several service calls before deciding whether to commit still can. This is a service-layer pattern, deliberately chosen over a repository-layer pattern: this project's routes were never doing much raw query-building by the time this layer was added (most reads already went through `paginate_query()` or a plain `db.session.get()`), so there was little left for a repository layer to abstract -- the real complexity was always in the business rules themselves.
 - `cache = Cache()` in `extensions.py` is created with no config, so `TestingConfig` can override the backend (`SimpleCache` vs `NullCache`) through `app.config` rather than the constructor overriding it.
 - `limiter = Limiter(..., default_limits=[...])` sets its global floor on the constructor, matching this project's `init_app()`-based wiring elsewhere.
 - `ServiceTicketSchema`, `MechanicSchema`, and `InventorySchema` all declare money fields as `fields.Decimal(as_string=True, places=2, ...)` -- serializing a fixed-precision string (`"450.00"`) so every money value in the API formats identically, while still accepting an int/float/string on input.
@@ -656,17 +672,19 @@ Ideas deliberately scoped out of this project, to keep each round of work focuse
 
 ### Ideas for production hardening
 
-A code review pass (GitHub Copilot) suggested several improvements genuinely worth having in a real deployment, but out of scope for this project as a course submission. Recorded here rather than built:
+Two GitHub Copilot code review passes suggested improvements genuinely worth having in a real deployment, but out of scope for this project as a course submission. Recorded here rather than built. Two items this list previously held -- a service layer and OpenAPI/Swagger documentation -- have since been acted on (see the Changelog) and are no longer listed as deferred.
 
 - **Optimistic concurrency on `PUT` routes** (an ETag or `updated_at` check), to prevent one update from silently overwriting another made a moment earlier.
+- **A standardized error-response contract** across every blueprint -- a consistent shape (code, message, details, field names where relevant), centralized via custom exception classes or a single API-error helper, rather than each route independently building its own `jsonify({"error": ...})` call. Would also make the Swagger docs' error examples more uniform than they are today.
 - **Structured audit logging** for sensitive actions -- role changes, deletions, ticket status transitions, inventory mutations -- so there's a record of who changed what and when, beyond what the database itself shows.
 - **Enforced ticket status transitions** via a real state machine (e.g. disallowing a jump backward from `Paid` to `In Progress`), already noted above as its own item.
 - **Request correlation IDs**, included in error responses and server-side logs, to make a single request traceable end to end.
-- **OpenAPI/Swagger documentation**, with contract tests run against the generated spec.
 - **Performance testing and indexing** for the sorting/pagination endpoints at real scale (e.g. indexes on `status`, `customer_id`, and the junction tables), since none of this project's endpoints have been load-tested.
 - **Redis-backed cache and rate-limit stores**, replacing the current in-memory ones -- necessary for correctness the moment this API runs as more than one process, since in-memory state isn't shared across processes.
+- **Expanded test coverage**: malformed-JSON bodies, empty-body edge cases beyond the ones already covered, pagination boundary values, and negative-number cases for every numeric field (not just the ones already tested), plus asserting exact error-message text (not just status codes) on the highest-value negative tests, such as duplicate-name and not-found cases.
 - **Property-based testing** for validators (VIN format, pagination parameters, quantity ranges) to stress unusual inputs beyond the specific cases this project's tests cover.
 - **Additional security-hardening tests** around token tampering, expired tokens, and mixed token-type misuse, systematically applied across every protected route rather than the representative cases already covered.
+- **Additional filters/search** on the ticket and inventory list endpoints (e.g. filter tickets by status or customer, filter inventory by low-stock threshold), beyond the pagination these endpoints already support.
 
 ---
 
@@ -686,5 +704,6 @@ A code review pass (GitHub Copilot) suggested several improvements genuinely wor
 - [x] Interactive Swagger documentation at `/api/docs`, covering every endpoint's paths, request/response definitions, and error cases, verified live against the running server
 - [x] 173 automated tests passing (`python -m pytest -v`)
 - [x] Separate `unittest`-based suite (62 tests, one file per blueprint) passing via `python -m unittest discover tests`, per the TDD assignment's literal requirement
+- [x] Business logic extracted into a service layer (`app/services/`), separate from route handlers, across all four blueprints
 - [x] Pylint clean (`python -m pylint app tests config.py`)
 - [x] CI workflow passing on GitHub Actions

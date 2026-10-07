@@ -2,41 +2,25 @@
 CRUD routes for the Mechanic resource, plus authentication and
 ticket-count insight endpoints.
 
-Registered under the /mechanics url_prefix (see app/__init__.py), so
-these routes only need their path relative to that.
+Duplicate-email checks and the salary-excluding sort summaries live
+in app/services/mechanic_service.py; routes handle auth, pagination,
+and response shaping.
 
-Every mechanic action beyond login now requires mechanic
-authentication (see app/utils/util.py). Creating, updating, deleting,
-and listing every mechanic (GET "") are all manager-only: a shop's
-roster -- and everyone's salary, which the full list and update route
-both touch -- is management information, not something a regular
-mechanic should see or change about anyone but themselves. A regular
-mechanic can look up their OWN profile only (see get_mechanic's
-ownership check); the three ticket-count sort endpoints are open to
-any logged-in mechanic, but deliberately exclude salary from their
-response (see _mechanic_summary), since sorting by workload doesn't
-require seeing anyone's pay.
+Creating, updating, deleting, and listing every mechanic (GET "") are
+manager-only: a shop's roster -- and everyone's salary, touched by
+both the full list and the update route -- is management information.
+A regular mechanic can look up their OWN profile only; the three
+sort endpoints are open to any logged-in mechanic.
 
 Caching: get_mechanics is the one cached route in this app, using
-@cache.cached(..., query_string=True) so each page/page_size
-combination is cached under its own key -- Flask-Caching's key does
-NOT vary by query string unless you ask it to. create_mechanic,
-update_mechanic, and delete_mechanic all call cache.clear() rather
-than deleting a single key, guaranteeing every cached page is
-invalidated on any write, not just one of them. This is safe
-specifically because GET /mechanics is the only cached route anywhere
-in the app; if a second cached route were ever added, this would need
-to become more targeted. The single-mechanic lookup (get_mechanic) is
-NOT cached at all -- see that function's docstring for why.
-
-Decorator order also matters for correctness, not just cleanliness:
-authentication must run BEFORE caching on get_mechanics. Flask-
-Caching's cache key is based on the request path, not on who's
-asking -- if caching ran first, a cached response computed for one
-authenticated request could be served to a LATER, completely
-unauthenticated request hitting the same path. Putting
-@manager_required above @cache.cached guarantees every request
-re-checks the token before the cache is ever consulted.
+query_string=True so each page/page_size combination is cached under
+its own key -- Flask-Caching's key does NOT vary by query string
+unless asked. Writes call cache.clear() rather than deleting a single
+key, since GET /mechanics is the only cached route anywhere in the
+app. Authentication runs BEFORE caching, since Flask-Caching's key is
+based on the path, not who's asking -- if caching ran first, a
+response computed for one authenticated request could be served to a
+later, unauthenticated one.
 """
 
 from flask import request, jsonify
@@ -46,6 +30,7 @@ from werkzeug.security import check_password_hash, generate_password_hash
 
 from app.extensions import cache, db, limiter
 from app.models.mechanic import Mechanic
+from app.services import mechanic_service
 from app.blueprints.mechanic import mechanic_bp
 from app.blueprints.mechanic.schemas import (
     login_schema,
@@ -62,23 +47,14 @@ from app.utils.util import encode_mechanic_token, manager_required, mechanic_tok
 @limiter.limit("5 per hour")
 @manager_required
 def create_mechanic(_manager_id):
-    """Create a new mechanic from the JSON request body.
-
-    Manager-only: unlike Customer, a mechanic account can't
-    self-register at all -- only an existing manager can add staff.
-    Rate limited to 5 requests per hour per client IP on top of that,
-    same reasoning as create_customer. The limiter is checked before
-    the manager check (it's the outer decorator), so repeated
-    unauthorized attempts still count toward the limit.
-    """
+    """A mechanic account can't self-register -- only a manager can
+    add staff."""
     try:
         mechanic_data = mechanic_schema.load(request.json)
     except ValidationError as e:
         return validation_error_response(e)
 
-    query = select(Mechanic).where(Mechanic.email == mechanic_data["email"])
-    existing_mechanic = db.session.execute(query).scalars().first()
-    if existing_mechanic:
+    if mechanic_service.email_taken(mechanic_data["email"]):
         return jsonify({"error": "Email already associated with an account."}), 400
 
     plaintext_password = mechanic_data.pop("password")
@@ -87,17 +63,15 @@ def create_mechanic(_manager_id):
     )
     db.session.add(new_mechanic)
     db.session.commit()
-    cache.clear()  # roster changed; every cached page is now stale
+    cache.clear()
     return mechanic_schema.jsonify(new_mechanic), 201
 
 
 @mechanic_bp.route("/login", methods=["POST"])
 @limiter.limit("10 per hour")
 def login():
-    """Exchange a mechanic's email and password for a JWT carrying
-    their role. Rate limited to 10 requests per hour per client IP,
-    same reasoning as customer login: a classic brute-force target.
-    """
+    """Rate limited to 10/hour/IP, same brute-force reasoning as
+    customer login."""
     try:
         credentials = login_schema.load(request.json)
     except ValidationError as e:
@@ -110,9 +84,6 @@ def login():
         token = encode_mechanic_token(mechanic.id, mechanic.role)
         return jsonify({"status": "success", "auth_token": token}), 200
 
-    # Same reasoning as customer login: identical message whether the
-    # email doesn't exist or the password is wrong, so a client can't
-    # enumerate which emails belong to real accounts.
     return jsonify({"error": "Invalid email or password."}), 401
 
 
@@ -120,93 +91,44 @@ def login():
 @manager_required
 @cache.cached(timeout=60, query_string=True)
 def get_mechanics(_manager_id):
-    """Retrieve every mechanic, including salary, paginated.
-    Manager-only: a regular mechanic has no legitimate reason to see
-    every other mechanic's pay -- only a manager, who already sets
-    salaries via update_mechanic, needs this view.
-
-    ?page (default 1) and ?page_size (default 5, capped at 25) work
-    the same way as GET /customers' pagination -- see
-    app/utils/pagination.py.
-
-    Cached for 60 seconds. query_string=True keeps each
-    page/page_size combination in its own cache entry. (See module
-    docstring for why auth must be the outer decorator on a cached
-    route, and why writes below use cache.clear() rather than
-    deleting a single key.)
-    """
+    """Manager-only -- the full roster including salary."""
     result = paginate_query(
         select(Mechanic), Mechanic.id, mechanics_schema, "mechanics", size_limits=(5, 25)
     )
     return jsonify(result), 200
 
 
-def _mechanic_summary(mechanic, **extra_fields):
-    """Build a mechanic's public-facing summary: id and name only --
-    deliberately excludes salary. Shared by the three sort endpoints
-    below, so a regular mechanic can use sorting/insight views without
-    ever seeing anyone's pay, including their own via this endpoint
-    (their own salary is still visible through GET /mechanics/<own_id>).
-    """
-    return {"id": mechanic.id, "name": mechanic.name, **extra_fields}
-
-
 @mechanic_bp.route("/most-tickets", methods=["GET"])
 @mechanic_token_required
 def get_mechanics_by_ticket_count(_mechanic_id, _role):
-    """Retrieve every mechanic sorted by total number of tickets
-    they've ever worked, most first by default. Available to any
-    logged-in mechanic; response excludes salary (see _mechanic_summary).
-
-    Not cached: it depends on ticket-assignment activity across the
-    whole shop, which changes every time a ticket is created or a
-    mechanic is added/removed from one -- the same reasoning that
-    keeps ServiceTicket routes uncached elsewhere in this project.
-
-    ?order=asc reverses to least tickets first.
-    """
+    """Not cached: depends on shop-wide ticket-assignment activity,
+    which changes constantly."""
     order = request.args.get("order", "desc")
-    query = select(Mechanic)
-    mechanics = list(db.session.execute(query).scalars().all())
+    mechanics = list(db.session.execute(select(Mechanic)).scalars().all())
     mechanics.sort(key=lambda m: len(m.service_tickets), reverse=order != "asc")
 
     result = [
-        _mechanic_summary(m, ticket_count=len(m.service_tickets))
+        mechanic_service.mechanic_summary(m, ticket_count=len(m.service_tickets))
         for m in mechanics
     ]
     return jsonify(result), 200
 
 
-def _count_tickets_by_status(mechanic, statuses):
-    """Count how many of a mechanic's tickets currently have a status
-    in the given list. Shared by the open- and closed-ticket sort
-    endpoints below.
-    """
-    return len([t for t in mechanic.service_tickets if t.status in statuses])
-
-
 @mechanic_bp.route("/open-tickets", methods=["GET"])
 @mechanic_token_required
 def get_mechanics_by_open_ticket_count(_mechanic_id, _role):
-    """Retrieve every mechanic sorted by how many currently OPEN
-    tickets (Pending, In Progress, or Completed but not yet paid)
-    they're assigned to, most first by default -- a rough measure of
-    current workload. Available to any logged-in mechanic; response
-    excludes salary (see _mechanic_summary).
-
-    ?order=asc reverses to fewest open tickets first.
-    """
+    """Open = Pending, In Progress, or Completed but not yet paid --
+    a rough measure of current workload."""
     order = request.args.get("order", "desc")
-    query = select(Mechanic)
-    mechanics = list(db.session.execute(query).scalars().all())
+    mechanics = list(db.session.execute(select(Mechanic)).scalars().all())
     mechanics.sort(
-        key=lambda m: _count_tickets_by_status(m, OPEN_STATUSES),
+        key=lambda m: mechanic_service.count_tickets_by_status(m, OPEN_STATUSES),
         reverse=order != "asc",
     )
 
     result = [
-        _mechanic_summary(
-            m, open_ticket_count=_count_tickets_by_status(m, OPEN_STATUSES)
+        mechanic_service.mechanic_summary(
+            m, open_ticket_count=mechanic_service.count_tickets_by_status(m, OPEN_STATUSES)
         )
         for m in mechanics
     ]
@@ -216,25 +138,17 @@ def get_mechanics_by_open_ticket_count(_mechanic_id, _role):
 @mechanic_bp.route("/closed-tickets", methods=["GET"])
 @mechanic_token_required
 def get_mechanics_by_closed_ticket_count(_mechanic_id, _role):
-    """Retrieve every mechanic sorted by how many closed tickets
-    (Paid or Picked Up) they've worked, most first by default -- a
-    rough measure of completed, paid-for work. Available to any
-    logged-in mechanic; response excludes salary (see
-    _mechanic_summary).
-
-    ?order=asc reverses to fewest closed tickets first.
-    """
+    """Closed = Paid or Picked Up -- completed, paid-for work."""
     order = request.args.get("order", "desc")
-    query = select(Mechanic)
-    mechanics = list(db.session.execute(query).scalars().all())
+    mechanics = list(db.session.execute(select(Mechanic)).scalars().all())
     mechanics.sort(
-        key=lambda m: _count_tickets_by_status(m, CLOSED_STATUSES),
+        key=lambda m: mechanic_service.count_tickets_by_status(m, CLOSED_STATUSES),
         reverse=order != "asc",
     )
 
     result = [
-        _mechanic_summary(
-            m, closed_ticket_count=_count_tickets_by_status(m, CLOSED_STATUSES)
+        mechanic_service.mechanic_summary(
+            m, closed_ticket_count=mechanic_service.count_tickets_by_status(m, CLOSED_STATUSES)
         )
         for m in mechanics
     ]
@@ -244,23 +158,11 @@ def get_mechanics_by_closed_ticket_count(_mechanic_id, _role):
 @mechanic_bp.route("/<int:mechanic_id>", methods=["GET"])
 @mechanic_token_required
 def get_mechanic(requesting_id, role, mechanic_id):
-    """Retrieve a single mechanic by id, including salary.
-
-    A manager may look up any mechanic. A regular mechanic may only
-    look up their OWN profile -- checked before the database is even
-    queried, so a mechanic can't use this to probe another mechanic's
-    salary or account details.
-
-    Not cached: @cache.memoize keys its cache entries by the
-    decorated function's actual arguments, which now include the
-    REQUESTING mechanic's id and role (from mechanic_token_required).
-    That means every different requester would get their own separate
-    cache entry for the same target mechanic, and cache.delete_memoized
-    (used to invalidate on update/delete) could no longer reliably
-    clear them all. Given this route is now authenticated internal
-    traffic rather than public, high-volume traffic, the caching
-    benefit no longer outweighed that complexity.
-    """
+    """A manager may look up anyone; a regular mechanic only their
+    own profile -- checked before the database is even queried, so
+    it can't be used to probe another mechanic's salary. Not cached:
+    keying by both target id and requester would make invalidation
+    unreliable."""
     if role != "manager" and requesting_id != mechanic_id:
         return jsonify({"error": "You may only view your own profile."}), 403
 
@@ -273,10 +175,7 @@ def get_mechanic(requesting_id, role, mechanic_id):
 @mechanic_bp.route("/<int:mechanic_id>", methods=["PUT"])
 @manager_required
 def update_mechanic(_manager_id, mechanic_id):
-    """Replace an existing mechanic's fields with the JSON request
-    body. Manager-only: updating a mechanic's role or salary is a
-    roster-management decision, same reasoning as create_mechanic.
-    """
+    """Updating role or salary is a roster-management decision."""
     mechanic = db.session.get(Mechanic, mechanic_id)
     if not mechanic:
         return jsonify({"error": "Mechanic not found."}), 404
@@ -286,13 +185,7 @@ def update_mechanic(_manager_id, mechanic_id):
     except ValidationError as e:
         return validation_error_response(e)
 
-    # Same duplicate-email check as create_mechanic, but excluding
-    # this mechanic's own row.
-    query = select(Mechanic).where(
-        Mechanic.email == mechanic_data["email"], Mechanic.id != mechanic_id
-    )
-    existing_mechanic = db.session.execute(query).scalars().first()
-    if existing_mechanic:
+    if mechanic_service.email_taken(mechanic_data["email"], exclude_id=mechanic_id):
         return jsonify({"error": "Email already associated with an account."}), 400
 
     plaintext_password = mechanic_data.pop("password")
@@ -301,7 +194,7 @@ def update_mechanic(_manager_id, mechanic_id):
     mechanic.password_hash = generate_password_hash(plaintext_password)
 
     db.session.commit()
-    cache.clear()  # every cached page now holds this mechanic's old values
+    cache.clear()
     return mechanic_schema.jsonify(mechanic), 200
 
 
@@ -309,18 +202,15 @@ def update_mechanic(_manager_id, mechanic_id):
 @limiter.limit("10 per hour")
 @manager_required
 def delete_mechanic(_manager_id, mechanic_id):
-    """Delete a mechanic by id. Manager-only, for the same reasoning
-    as create_mechanic/update_mechanic. Still rate limited to 10
-    requests per hour per client IP on top of that, since deletion is
-    destructive regardless of who's attempting it.
-    """
+    """Rate limited: deletion is destructive regardless of who's
+    attempting it."""
     mechanic = db.session.get(Mechanic, mechanic_id)
     if not mechanic:
         return jsonify({"error": "Mechanic not found."}), 404
 
     db.session.delete(mechanic)
     db.session.commit()
-    cache.clear()  # deleted mechanic must vanish from every cached page
+    cache.clear()
     return (
         jsonify({"message": f"Mechanic id: {mechanic_id}, successfully deleted."}),
         200,
