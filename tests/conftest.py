@@ -32,9 +32,18 @@ from werkzeug.security import generate_password_hash
 from app import create_app
 from app.extensions import cache, limiter
 from app.extensions import db as _db
+from app.models.customer import Customer
 from app.models.mechanic import Mechanic
+from app.models.service_ticket import ServiceTicket
 from config import TestingConfig
 
+
+# Tells pytest's own test collection to skip this subfolder entirely --
+# tests/unittest_suite/ holds a separate unittest-based suite (run via
+# `python -m unittest discover tests`, per the course assignment), and
+# without this, plain `pytest` would also collect and run those same
+# tests a second time, double-counting against this suite's real
+# total.
 collect_ignore = ["unittest_suite"]
 
 class RateLimitedTestConfig(TestingConfig):
@@ -306,3 +315,17 @@ def create_ticket(client, manager_headers, customer_id=None, **overrides):
     return client.post(
         "/service-tickets", json=payload, headers=manager_headers
     ).json["id"]
+
+
+def seed_customer_mechanic_ticket(db, **ticket_overrides):  # pylint: disable=redefined-outer-name
+    """Create and commit a Customer, a Mechanic, and a ServiceTicket
+    belonging to that customer, in one call. Used by tests that need
+    all three objects to exist but don't care about their specific
+    field values -- just that a real ticket, with a real customer,
+    exists for a mechanic to be (or not be) assigned to."""
+    customer = Customer(**make_customer_kwargs())
+    mechanic_obj = Mechanic(**make_mechanic_kwargs())
+    ticket = ServiceTicket(customer=customer, **make_service_ticket_kwargs(**ticket_overrides))
+    db.session.add_all([customer, mechanic_obj, ticket])
+    db.session.commit()
+    return customer, mechanic_obj, ticket

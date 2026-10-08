@@ -45,6 +45,12 @@ A Flask + SQLAlchemy + MySQL backend for a mechanic shop, with role-based JWT au
 
 ## Changelog
 
+### 2026-10-08: Direct Unit Tests for the Service Layer
+
+- Added `tests/test_services.py` (23 tests), calling every function across all four `app/services/` modules directly -- no Flask request, no HTTP client, no authentication. This is the concrete benefit a service layer is supposed to provide: a business rule (duplicate-email exclusion on update, stock over-allocation, the self-exclusion logic on name/email checks, account anonymization) can be tested in isolation, without standing up a whole fake request just to reach it. Every rule here was already exercised indirectly through the route-level tests; these tests prove the rule is correct at its source.
+- `seed_customer_mechanic_ticket()` added to `conftest.py`, factoring out a Customer+Mechanic+ServiceTicket setup block that both this file and `test_service_mechanics.py` needed -- removes a duplicate-code warning Pylint correctly flagged once both existed.
+- Pytest total: **196** (173 + 23 new). The separate `unittest` suite (62 tests) is unaffected and still excluded from pytest's own collection via `conftest.py`'s `collect_ignore`.
+
 ### 2026-10-07: Service Layer (business logic extracted from routes)
 
 - Added `app/services/` -- one module per resource (`customer_service.py`, `mechanic_service.py`, `service_ticket_service.py`, `inventory_service.py`) holding the actual business rules that were previously written inline inside route functions: duplicate-email/name checks, the customer service-history delete policy, account anonymization, mechanic-assignment checks, stock allocation with price-snapshotting, and bulk-mechanic-id resolution.
@@ -54,7 +60,7 @@ A Flask + SQLAlchemy + MySQL backend for a mechanic shop, with role-based JWT au
 
 ### 2026-10-05: Second Test Suite (unittest, one file per blueprint)
 
-- Added a second, `unittest`-based test suite under `tests/unittest_suite/` (`test_customers.py`, `test_mechanics.py`, `test_service_tickets.py`, `test_inventory.py`), satisfying a later assignment's literal requirement: `unittest` specifically (not `pytest`), one file per blueprint, at least one test per route, run via `python -m unittest discover tests`. The existing pytest suite (173 tests) remains the primary, exhaustive suite -- this one exists alongside it, not instead of it.
+- Added a second, `unittest`-based test suite under `tests/unittest_suite/` (`test_customers.py`, `test_mechanics.py`, `test_service_tickets.py`, `test_inventory.py`), satisfying a later assignment's literal requirement: `unittest` specifically (not `pytest`), one file per blueprint, at least one test per route, run via `python -m unittest discover tests`. The existing pytest suite remains the primary, exhaustive suite -- this one exists alongside it, not instead of it.
 - The new suite lives in its own subfolder with its own `__init__.py` (required for `unittest discover` to find it), specifically so that `pytest` -- which automatically collects `unittest.TestCase` classes too -- doesn't silently double-count both suites together when run normally. `conftest.py` declares `collect_ignore = ["unittest_suite"]` to exclude it from pytest's own collection.
 - Both suites reuse the same plain-function helpers already in `conftest.py` rather than duplicating setup logic in a second style.
 - See [Testing](#testing) for how to run each suite and why both exist.
@@ -567,6 +573,8 @@ Mechanic_project/
     test_customer_deletion.py
     test_rate_limiting.py
     test_error_handlers.py
+    test_service_mechanics.py    # composite-PK uniqueness at the DB level
+    test_services.py             # direct unit tests for app/services/, no Flask/HTTP
     unittest_suite/              # separate unittest-based suite (see Testing section);
       __init__.py                 # required so `unittest discover` finds this package;
                                    # pytest skips it entirely via conftest.py's collect_ignore
@@ -617,7 +625,7 @@ Run the full suite:
 python -m pytest -v
 ```
 
-Currently: **173 tests, all passing.**
+Currently: **196 tests, all passing.**
 
 - **`test_customer_model.py`** / **`test_customer_routes.py`** -- creation, uniqueness, auth/ownership on update/delete, pagination.
 - **`test_customer_auth.py`** -- login, password-never-leaked, `my-tickets` token enforcement and scoping.
@@ -631,6 +639,8 @@ Currently: **173 tests, all passing.**
 - **`test_ticket_parts.py`** -- `add-part`: stock decrement, quantity-bump on repeat add, over-allocation rejection, price-snapshot immutability, assignment-based authorization.
 - **`test_rate_limiting.py`** -- every route-specific limit, the global default, and that a bootstrapped manager/mechanic doesn't itself count toward any limit.
 - **`test_error_handlers.py`** -- consistent JSON across every failure mode.
+- **`test_service_mechanics.py`** -- the composite primary key on `service_mechanics` rejecting a duplicate assignment row at the database level.
+- **`test_services.py`** -- direct unit tests for `app/services/`, calling each business-rule function with no Flask/HTTP layer involved at all.
 
 Tests run against a temporary in-memory SQLite database (`TestingConfig`), never the real MySQL database. Since there's no API route to create the first manager account (by design), tests bootstrap one directly via a `seed_manager()`/`create_manager()` helper in `conftest.py`, then log in through the _real_ `/mechanics/login` route.
 
@@ -644,7 +654,7 @@ python -m unittest discover tests
 
 Currently: **62 tests, all passing** (`tests/unittest_suite/test_customers.py`, `test_mechanics.py`, `test_service_tickets.py`, `test_inventory.py` -- at least one success case and one failure case per route).
 
-This suite lives in its own subfolder, `tests/unittest_suite/` (with its own `__init__.py`, required for `unittest discover` to find it at all), rather than directly inside `tests/`. That separation exists for one concrete reason: `pytest` automatically collects and runs `unittest.TestCase` classes too, by design -- without the subfolder, a plain `pytest` run would silently execute both suites together and report a misleading combined total instead of this project's real 173. `conftest.py` declares `collect_ignore = ["unittest_suite"]` (placed after its imports, not before -- Pylint flags import-position otherwise) so `pytest` skips that subfolder entirely, while `python -m unittest discover tests` -- which has its own independent discovery logic and never reads `conftest.py` -- still finds and runs it normally.
+This suite lives in its own subfolder, `tests/unittest_suite/` (with its own `__init__.py`, required for `unittest discover` to find it at all), rather than directly inside `tests/`. That separation exists for one concrete reason: `pytest` automatically collects and runs `unittest.TestCase` classes too, by design -- without the subfolder, a plain `pytest` run would silently execute both suites together and report a misleading combined total instead of this project's real pytest count. `conftest.py` declares `collect_ignore = ["unittest_suite"]` (placed after its imports, not before -- Pylint flags import-position otherwise) so `pytest` skips that subfolder entirely, while `python -m unittest discover tests` -- which has its own independent discovery logic and never reads `conftest.py` -- still finds and runs it normally.
 
 Both suites reuse the exact same plain-function helpers from `conftest.py` (`make_customer_payload`, `login_customer`, `create_manager`, etc.) rather than each suite reimplementing its own setup logic -- those helpers were never pytest-specific to begin with; they just take `client`/`db` as arguments.
 
@@ -702,7 +712,7 @@ Two GitHub Copilot code review passes suggested improvements genuinely worth hav
 - [x] `seed.py`: Faker-driven demo data with a documented, predictable local password scheme
 - [x] Postman collection included in the repo and covers every endpoint, including auth, role-rejection, and business-rule-conflict cases
 - [x] Interactive Swagger documentation at `/api/docs`, covering every endpoint's paths, request/response definitions, and error cases, verified live against the running server
-- [x] 173 automated tests passing (`python -m pytest -v`)
+- [x] 196 automated tests passing (`python -m pytest -v`)
 - [x] Separate `unittest`-based suite (62 tests, one file per blueprint) passing via `python -m unittest discover tests`, per the TDD assignment's literal requirement
 - [x] Business logic extracted into a service layer (`app/services/`), separate from route handlers, across all four blueprints
 - [x] Pylint clean (`python -m pylint app tests config.py`)

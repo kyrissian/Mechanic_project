@@ -6,15 +6,8 @@ duplicate check in assign_mechanic."""
 import pytest
 from sqlalchemy.exc import IntegrityError
 
-from app.models.customer import Customer
-from app.models.mechanic import Mechanic
 from app.models.service_mechanics import service_mechanics
-from app.models.service_ticket import ServiceTicket
-from tests.conftest import (
-    make_customer_kwargs,
-    make_mechanic_kwargs,
-    make_service_ticket_kwargs,
-)
+from tests.conftest import seed_customer_mechanic_ticket
 
 
 def test_duplicate_service_mechanics_row_rejected_at_db_level(db):
@@ -23,11 +16,7 @@ def test_duplicate_service_mechanics_row_rejected_at_db_level(db):
     something bypassed the application-level duplicate check in
     assign_mechanic (e.g. a direct insert, or a race between two
     near-simultaneous requests)."""
-    customer = Customer(**make_customer_kwargs())
-    mechanic = Mechanic(**make_mechanic_kwargs())
-    ticket = ServiceTicket(customer=customer, **make_service_ticket_kwargs())
-    db.session.add_all([customer, mechanic, ticket])
-    db.session.commit()
+    _, mechanic, ticket = seed_customer_mechanic_ticket(db)
 
     # Insert directly into the junction table, bypassing the ORM
     # relationship (ticket.mechanics.append(...)) and its app-level
