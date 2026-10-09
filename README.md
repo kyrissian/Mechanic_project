@@ -45,6 +45,12 @@ A Flask + SQLAlchemy + MySQL backend for a mechanic shop, with role-based JWT au
 
 ## Changelog
 
+### 2026-10-09: CI Now Runs Both Test Suites
+
+- `.github/workflows/ci.yml` gained a dedicated step running the `unittest` suite (`python -m unittest discover tests`), alongside the existing pytest and Pylint steps. Previously, CI only ran pytest -- since the `unittest` suite is deliberately excluded from pytest's own collection (`conftest.py`'s `collect_ignore`, added to prevent double-counting), it was never actually being verified by CI at all, even though it's a real, maintained part of this project.
+- The workflow's own header comment updated to reflect that it's no longer just a carried-over habit: a later lesson ("Intro to CI/CD and GitHub Actions") made a CI pipeline an explicit assignment requirement, and this existing workflow was extended to meet it rather than being rebuilt.
+- See [CI](#ci) for what the workflow now runs.
+
 ### 2026-10-08: Direct Unit Tests for the Service Layer
 
 - Added `tests/test_services.py` (23 tests), calling every function across all four `app/services/` modules directly -- no Flask request, no HTTP client, no authentication. This is the concrete benefit a service layer is supposed to provide: a business rule (duplicate-email exclusion on update, stock over-allocation, the self-exclusion logic on name/email checks, account anonymization) can be tested in isolation, without standing up a whole fake request just to reach it. Every rule here was already exercised indirectly through the route-level tests; these tests prove the rule is correct at its source.
@@ -666,7 +672,9 @@ Every endpoint was also manually verified against the real running app and real 
 
 ## CI
 
-`.github/workflows/ci.yml` runs on every push and pull request to `main`: installs dependencies from `requirements.txt`, runs the full pytest suite, then runs Pylint. `TestingConfig` sets its own fixed `SECRET_KEY`, so CI never needs the real one, and needs no database service or secrets configured at all.
+`.github/workflows/ci.yml` runs on every push and pull request to `main`: installs dependencies from `requirements.txt`, then runs three gates in sequence -- the pytest suite, the separate `unittest` suite (`python -m unittest discover tests`), then Pylint. All three must pass for the workflow to succeed. `TestingConfig` sets its own fixed `SECRET_KEY`, so CI never needs the real one, and needs no database service or secrets configured at all.
+
+Originally built ahead of any assignment requiring it (carried over from an earlier project's CI/CD habits). The "Intro to CI/CD and GitHub Actions" lesson later made a workflow like this an explicit requirement -- since one already existed, it was extended (the `unittest` suite added as its own explicit step, since it's deliberately excluded from pytest's own collection and would otherwise never run in CI at all) rather than rebuilt from scratch. There is no deploy stage: this API isn't hosted anywhere, so the workflow stays test/lint-only.
 
 ---
 

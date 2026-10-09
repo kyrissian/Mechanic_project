@@ -1,9 +1,12 @@
-name: Mechanic Shop API CI
+name: Mechanic Shop Flask API CI
 
-# Not required by the assignment -- added to carry over the CI/CD
-# habits from The Daily Haul into backend work too. No deploy stage
-# here (unlike that project's Vercel pipeline): this API isn't hosted
-# anywhere, so this workflow is test/lint-only.
+# Originally added ahead of any assignment requiring it, carrying
+# over CI/CD habits from The Daily Haul into backend work too. The
+# "Intro to CI/CD and GitHub Actions" lesson later made a workflow
+# like this an explicit requirement -- this file already satisfied
+# it, so it was extended (both test suites, a lint gate) rather than
+# replaced. No deploy stage: this API isn't hosted anywhere, so this
+# workflow stays test/lint-only.
 
 on:
   push:
@@ -32,13 +35,23 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      # Step 4: run the full test suite. Tests use an in-memory
-      # SQLite database (TestingConfig), never a real MySQL server --
-      # so no database service or .env secrets are needed here at all.
-      - name: Run test suite
+      # Step 4: run the primary test suite (pytest). Tests use an
+      # in-memory SQLite database (TestingConfig), never a real MySQL
+      # server -- so no database service or .env secrets are needed
+      # here at all.
+      - name: Run pytest suite
         run: python -m pytest -v
 
-      # Step 5: lint gate. Runs after tests so a broken test fails
-      # fast, before spending time on style checks.
+      # Step 5: run the second, unittest-based suite separately. This
+      # suite lives in tests/unittest_suite/ and is deliberately
+      # excluded from pytest's own collection (see conftest.py's
+      # collect_ignore) to avoid double-counting -- so it needs its
+      # own explicit step here, or it would never actually run in CI
+      # at all.
+      - name: Run unittest suite
+        run: python -m unittest discover tests
+
+      # Step 6: lint gate. Runs after both test suites so a broken
+      # test fails fast, before spending time on style checks.
       - name: Run Pylint
         run: python -m pylint app tests config.py
