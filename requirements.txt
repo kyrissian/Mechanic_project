@@ -13,4 +13,4 @@ Faker==40.39.0
 flask-swagger==0.2.14
 flask-swagger-ui==5.33.0
 gunicorn==26.2.0
-psycopg2==2.9.13
+psycopg2-binary==2.9.13
