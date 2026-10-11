@@ -98,14 +98,23 @@ class ProductionConfig(Config):
     ever triggers an unhandled exception, which is a real security
     hole on anything other than localhost.
 
-    SQLALCHEMY_DATABASE_URI is read directly from the
-    SQLALCHEMY_DATABASE_URI environment variable (Render's own
-    External Database URL for the Postgres instance, pasted into
-    Render's dashboard as a real environment variable during Web
-    Service setup) rather than built from separate host/user/password
-    pieces the way DevelopmentConfig is -- Render provides the whole
-    URI as one value, already in the right format for SQLAlchemy.
+    SQLALCHEMY_DATABASE_URI is read from the SQLALCHEMY_DATABASE_URI
+    environment variable (Render's own External Database URL for the
+    Postgres instance, pasted into Render's dashboard as a real
+    environment variable during Web Service setup), with its scheme
+    rewritten from "postgresql://" to "postgresql+psycopg2://". Without
+    this, SQLAlchemy 2.0+ treats a bare "postgresql://" URL as a
+    request for psycopg3 (a separate package literally named
+    "psycopg", not "psycopg2") by default -- this project installs
+    psycopg2-binary specifically, so the driver must be named
+    explicitly in the URL rather than left to SQLAlchemy's default.
     """
 
     DEBUG = False
-    SQLALCHEMY_DATABASE_URI = os.getenv("SQLALCHEMY_DATABASE_URI")
+
+    _raw_db_uri = os.getenv("SQLALCHEMY_DATABASE_URI")
+    SQLALCHEMY_DATABASE_URI = (
+        _raw_db_uri.replace("postgresql://", "postgresql+psycopg2://", 1)
+        if _raw_db_uri
+        else None
+    )
