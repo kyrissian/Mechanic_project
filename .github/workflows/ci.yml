@@ -1,12 +1,21 @@
-name: Mechanic Shop Flask API CI
+name: Mechanic Shop API CI
 
 # Originally added ahead of any assignment requiring it, carrying
 # over CI/CD habits from The Daily Haul into backend work too. The
 # "Intro to CI/CD and GitHub Actions" lesson later made a workflow
 # like this an explicit requirement -- this file already satisfied
 # it, so it was extended (both test suites, a lint gate) rather than
-# replaced. No deploy stage: this API isn't hosted anywhere, so this
-# workflow stays test/lint-only.
+# replaced. The "API Deployment and CI/CD Pipeline" assignment later
+# added the deploy job below, gated on the test job succeeding first.
+#
+# Render also offers a built-in "After CI Checks Pass" auto-deploy
+# option that reads GitHub's check status directly, with no deploy
+# job or secrets required at all -- genuinely simpler, but entirely
+# Render-specific. The explicit GitHub Actions deploy job below is
+# used instead, both because the assignment requires it by name and
+# because this checkout -> build -> test -> gated-deploy shape is the
+# general CI/CD pattern that transfers to any hosting provider, not
+# just this one.
 
 on:
   push:
@@ -55,3 +64,19 @@ jobs:
       # test fails fast, before spending time on style checks.
       - name: Run Pylint
         run: python -m pylint app tests config.py
+
+  deploy:
+    name: Deploy to Render
+    needs: test
+    runs-on: ubuntu-latest
+    # Only deploy on an actual push to main -- a pull request can run
+    # the test job (so reviewers see pass/fail before merging), but
+    # should never trigger a real deployment of unmerged code.
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+
+    steps:
+      - name: Deploy to production
+        uses: johnbeynon/render-deploy-action@v0.0.8
+        with:
+          service-id: ${{ secrets.SERVICE_ID }}
+          api-key: ${{ secrets.RENDER_API_KEY }}
