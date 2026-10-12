@@ -1,4 +1,4 @@
-name: Mechanic Shop API CI
+name: Mechanic Shop API CI/CD
 
 # Originally added ahead of any assignment requiring it, carrying
 # over CI/CD habits from The Daily Haul into backend work too. The

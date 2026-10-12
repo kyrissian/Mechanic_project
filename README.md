@@ -54,12 +54,12 @@ A Flask + SQLAlchemy + MySQL backend for a mechanic shop, with role-based JWT au
 - `psycopg2-binary` used instead of plain `psycopg2`: the non-binary package requires compiling against system PostgreSQL libraries at install time, which isn't reliably available in Render's build environment; `-binary` ships precompiled and installs cleanly there. (The lesson material itself flags this exact Mac-vs-deployment distinction; the same reasoning applies to Render's Linux build environment.)
 - Every dependency in `requirements.txt` is now version-pinned (previously unpinned except for the two deployment additions), generated from a known-good, fully-tested local environment -- an unpinned install on Render could otherwise silently pull a newer, untested version of any package at build time.
 - `app/static/swagger.yaml`'s `host` and `schemes` updated from `127.0.0.1:5000`/`http` to the live Render domain/`https`, so the hosted `/api/docs` page reflects the real, reachable API rather than localhost.
-- `.github/workflows/ci.yml` gained a `deploy` job, dependent on the existing `test` job (`needs: test`) -- a push to `main` now only triggers a real deployment if the full test suite (pytest, unittest) and Pylint all pass first. Render's own Auto-Deploy setting was turned off specifically so this GitHub Actions job is the only path to production, rather than Render redeploying independently on every push regardless of test outcome.
+- `.github/workflows/ci_cd.yml` gained a `deploy` job, dependent on the existing `test` job (`needs: test`) -- a push to `main` now only triggers a real deployment if the full test suite (pytest, unittest) and Pylint all pass first. Render's own Auto-Deploy setting was turned off specifically so this GitHub Actions job is the only path to production, rather than Render redeploying independently on every push regardless of test outcome.
 - Render also offers a built-in "After CI Checks Pass" auto-deploy option that would have accomplished the same test-gated-deploy outcome with no separate job or secrets required. The explicit GitHub Actions `deploy` job was used instead: the assignment requires it by name, and the checkout → build → test → gated-deploy shape is the general CI/CD pattern that transfers to any hosting provider, not a Render-specific shortcut.
 
 ### 2026-10-09: CI Now Runs Both Test Suites
 
-- `.github/workflows/ci.yml` gained a dedicated step running the `unittest` suite (`python -m unittest discover tests`), alongside the existing pytest and Pylint steps. Previously, CI only ran pytest -- since the `unittest` suite is deliberately excluded from pytest's own collection (`conftest.py`'s `collect_ignore`, added to prevent double-counting), it was never actually being verified by CI at all, even though it's a real, maintained part of this project.
+- `.github/workflows/ci_cd.yml` gained a dedicated step running the `unittest` suite (`python -m unittest discover tests`), alongside the existing pytest and Pylint steps. Previously, CI only ran pytest -- since the `unittest` suite is deliberately excluded from pytest's own collection (`conftest.py`'s `collect_ignore`, added to prevent double-counting), it was never actually being verified by CI at all, even though it's a real, maintained part of this project.
 - The workflow's own header comment updated to reflect that it's no longer just a carried-over habit: a later lesson ("Intro to CI/CD and GitHub Actions") made a CI pipeline an explicit assignment requirement, and this existing workflow was extended to meet it rather than being rebuilt.
 - See [CI](#ci) for what the workflow now runs.
 
@@ -150,7 +150,7 @@ This was the largest single change to the project -- a deliberate redesign that 
 ### 2026-09-16: Global Error Handling, CI, and Dependency Fix
 
 - Added global error handlers (`app/error_handlers.py`) so unmatched routes, wrong HTTP methods, and malformed/missing JSON bodies all return consistent JSON.
-- Added `.github/workflows/ci.yml`: runs the full test suite and Pylint on every push/PR.
+- Added `.github/workflows/ci_cd.yml`: runs the full test suite and Pylint on every push/PR.
 - Fixed a real gap in `requirements.txt` that would have broken a fresh install with `ModuleNotFoundError`.
 - 4 new tests.
 
@@ -528,7 +528,7 @@ Mechanic_project/
   Mechanic_Shop_API.postman_collection.json
   .github/
     workflows/
-      ci.yml
+      ci_cd.yml
   app/
     __init__.py                # app factory (create_app()); also wires up the
                                 # Swagger UI blueprint at /api/docs
@@ -692,7 +692,7 @@ Every endpoint was also manually verified against the real running app and real 
 
 ## CI/CD
 
-`.github/workflows/ci.yml` has two jobs, run on every push and pull request to `main`:
+`.github/workflows/ci_cd.yml` has two jobs, run on every push and pull request to `main`:
 
 1. **`test`** -- installs dependencies from `requirements.txt`, then runs three gates in sequence: the pytest suite, the separate `unittest` suite (`python -m unittest discover tests`), then Pylint. All three must pass for the job to succeed. `TestingConfig` sets its own fixed `SECRET_KEY`, so this job never needs the real one, and needs no database service or secrets configured at all.
 2. **`deploy`** -- depends on `test` (`needs: test`), and only runs on an actual push to `main` (not a pull request, so unmerged code is never deployed). If `test` fails, this job never runs at all. On success, it calls Render's deploy API directly (`johnbeynon/render-deploy-action`, authenticated with the `RENDER_API_KEY` and `SERVICE_ID` repository secrets) to trigger a real deployment of the live site.
@@ -753,7 +753,7 @@ Ideas deliberately scoped out of this project, to keep each round of work focuse
 - **Enforced status transitions** (e.g. blocking a jump straight from "Pending" to "Paid") via a real state machine, rather than the current flat, freely-settable `status` field.
 - **A staff-side "anonymize this account" route** for a customer _with_ service history, for a legitimate privacy request or after a retention period -- today, only a customer with zero tickets can close their own account, by design; a manager-initiated path for the with-history case was deliberately left unbuilt.
 - **A richer junction between `Mechanic` and `ServiceTicket`**, upgrading `service_mechanics` from a `db.Table` (now with a composite primary key, but still just a link) to a full model, adding `assigned_at`, `role_on_ticket` (e.g. lead vs. assisting), and a separate per-mechanic work log (task description, date, hours) -- so "who did the hardest work" can be judged from real task detail and time spent, not just headcount. `TicketPart` (`Inventory` ↔ `ServiceTicket`) already demonstrates this same modeled-junction pattern for parts; this would apply the same idea to mechanic assignment.
-- **Auth0 as a frontend-facing auth provider**, covered in its own course lesson but marked not required for this project and deliberately left unbuilt. Auth0 is a _replacement_ authentication strategy, not an addition -- it would mean either running two competing auth systems side by side or rebuilding this project's existing, fully-tested two-token JWT model, and the lesson's own setup assumes a React frontend already wrapping itself in `<Auth0Provider>`, which this backend-only project doesn't have. The lesson frames it as something to return to "during your tech residency as you work with a frontend developer to connect both ends" -- exactly the scenario it would actually apply to, rather than a backend API with no frontend of its own.
+- **Auth0 as a frontend-facing auth provider**, covered in its own course lesson but marked not required for this project and deliberately left unbuilt -- confirmed with engineering student support as unnecessary for this submission. Auth0 is a _replacement_ authentication strategy, not an addition -- it would mean either running two competing auth systems side by side or rebuilding this project's existing, fully-tested two-token JWT model, and the lesson's own setup assumes a React frontend already wrapping itself in `<Auth0Provider>`, which this backend-only project doesn't have. The lesson frames it as something to return to "during your tech residency as you work with a frontend developer to connect both ends" -- exactly the scenario it would actually apply to, rather than a backend API with no frontend of its own.
 
 ### Ideas for production hardening
 
@@ -794,4 +794,4 @@ Two GitHub Copilot code review passes suggested improvements genuinely worth hav
 - [x] CI workflow passing on GitHub Actions
 - [x] Deployed and live on Render, backed by a managed PostgreSQL database, served via Gunicorn
 - [x] Swagger docs' `host`/`schemes` updated to the live domain and `https`
-- [x] CI/CD: a `deploy` job in `ci.yml`, gated with `needs: test`, triggers a real deployment only after the full test suite and lint pass; Render's own Auto-Deploy is off so this is the only path to production
+- [x] CI/CD: a `deploy` job in `ci_cd.yml`, gated with `needs: test`, triggers a real deployment only after the full test suite and lint pass; Render's own Auto-Deploy is off so this is the only path to production
