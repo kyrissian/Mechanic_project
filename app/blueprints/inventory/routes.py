@@ -57,7 +57,8 @@ def get_inventory(_mechanic_id, _role):
 @inventory_bp.route("/<int:inventory_id>", methods=["GET"])
 @mechanic_token_required
 def get_part(_mechanic_id, _role, inventory_id):
-    """Any logged-in mechanic."""
+    """Any logged-in mechanic can read part details, since quoting
+    and planning repairs depends on seeing current part data."""
     part = db.session.get(Inventory, inventory_id)
     if part:
         return inventory_schema.jsonify(part), 200

@@ -38,12 +38,24 @@ A Flask + SQLAlchemy + MySQL backend for a mechanic shop, with role-based JWT au
 - [Project Structure](#project-structure)
 - [Architecture Notes](#architecture-notes)
 - [Testing](#testing)
-- [CI](#ci)
+- [CI/CD](#cicd)
+- [Deployment](#deployment)
 - [Future Extensions](#future-extensions)
 
 ---
 
 ## Changelog
+
+### 2026-10-11: Live Deployment on Render, Full CI/CD Pipeline
+
+- The API is now deployed and publicly reachable, running on [Render](https://render.com), backed by a managed Postgres database (also hosted on Render) instead of the local MySQL used in development. See [Deployment](#deployment) for the live URL and how the deployment is configured.
+- Added `flask_app.py`, a dedicated production entry point for gunicorn (`gunicorn flask_app:app`) -- deliberately kept separate from `run.py`, which still runs local development exactly as before (Flask's own dev server, `DevelopmentConfig`, real MySQL). Nothing about local development changed.
+- Added `ProductionConfig` to `config.py`: `DEBUG = False`, and a database URI read from the `SQLALCHEMY_DATABASE_URI` environment variable with its scheme rewritten to `postgresql+psycopg2://` -- SQLAlchemy 2.0+ otherwise defaults a bare `postgresql://` URL to psycopg3 (an entirely different, unrelated package also named `psycopg`), which this project does not install. This was a real, non-obvious failure encountered live during deployment, not a precaution taken in advance.
+- `psycopg2-binary` used instead of plain `psycopg2`: the non-binary package requires compiling against system PostgreSQL libraries at install time, which isn't reliably available in Render's build environment; `-binary` ships precompiled and installs cleanly there. (The lesson material itself flags this exact Mac-vs-deployment distinction; the same reasoning applies to Render's Linux build environment.)
+- Every dependency in `requirements.txt` is now version-pinned (previously unpinned except for the two deployment additions), generated from a known-good, fully-tested local environment -- an unpinned install on Render could otherwise silently pull a newer, untested version of any package at build time.
+- `app/static/swagger.yaml`'s `host` and `schemes` updated from `127.0.0.1:5000`/`http` to the live Render domain/`https`, so the hosted `/api/docs` page reflects the real, reachable API rather than localhost.
+- `.github/workflows/ci.yml` gained a `deploy` job, dependent on the existing `test` job (`needs: test`) -- a push to `main` now only triggers a real deployment if the full test suite (pytest, unittest) and Pylint all pass first. Render's own Auto-Deploy setting was turned off specifically so this GitHub Actions job is the only path to production, rather than Render redeploying independently on every push regardless of test outcome.
+- Render also offers a built-in "After CI Checks Pass" auto-deploy option that would have accomplished the same test-gated-deploy outcome with no separate job or secrets required. The explicit GitHub Actions `deploy` job was used instead: the assignment requires it by name, and the checkout → build → test → gated-deploy shape is the general CI/CD pattern that transfers to any hosting provider, not a Render-specific shortcut.
 
 ### 2026-10-09: CI Now Runs Both Test Suites
 
@@ -161,22 +173,24 @@ This was the largest single change to the project -- a deliberate redesign that 
 
 ## Tech Stack
 
-| Layer                      | Technology                                                                           |
-| -------------------------- | ------------------------------------------------------------------------------------ |
-| Web framework              | Flask (Application Factory pattern)                                                  |
-| ORM                        | Flask-SQLAlchemy (SQLAlchemy 2.0 `Mapped`/`mapped_column` style)                     |
-| Serialization / validation | Flask-Marshmallow, marshmallow-sqlalchemy                                            |
-| Database                   | MySQL (via `mysql-connector-python`)                                                 |
-| Authentication             | JWT (`python-jose`), `werkzeug.security` for password hashing, role-based access     |
-| Rate limiting              | Flask-Limiter (in-memory store)                                                      |
-| Caching                    | Flask-Caching (`SimpleCache` in development, `NullCache` in tests)                   |
-| Seed data                  | Faker                                                                                |
-| Config / secrets           | `python-dotenv` (`.env`, gitignored)                                                 |
-| Testing                    | pytest, with an isolated in-memory SQLite database                                   |
-| Manual API testing         | Postman (collection included in the repo)                                            |
-| API documentation          | Swagger / OpenAPI 2.0 (`flask-swagger-ui`), interactive at `/api/docs`               |
-| Linting                    | Pylint                                                                               |
-| CI                         | GitHub Actions (test + lint only -- no deploy stage; this API isn't hosted anywhere) |
+| Layer                      | Technology                                                                                            |
+| -------------------------- | ----------------------------------------------------------------------------------------------------- |
+| Web framework              | Flask (Application Factory pattern)                                                                   |
+| ORM                        | Flask-SQLAlchemy (SQLAlchemy 2.0 `Mapped`/`mapped_column` style)                                      |
+| Serialization / validation | Flask-Marshmallow, marshmallow-sqlalchemy                                                             |
+| Database                   | MySQL (via `mysql-connector-python`) in development; PostgreSQL (via `psycopg2-binary`) in production |
+| Authentication             | JWT (`python-jose`), `werkzeug.security` for password hashing, role-based access                      |
+| Rate limiting              | Flask-Limiter (in-memory store)                                                                       |
+| Caching                    | Flask-Caching (`SimpleCache` in development, `NullCache` in tests)                                    |
+| Seed data                  | Faker                                                                                                 |
+| Config / secrets           | `python-dotenv` (`.env`, gitignored)                                                                  |
+| Testing                    | pytest, with an isolated in-memory SQLite database                                                    |
+| Manual API testing         | Postman (collection included in the repo)                                                             |
+| API documentation          | Swagger / OpenAPI 2.0 (`flask-swagger-ui`), interactive at `/api/docs`                                |
+| Linting                    | Pylint                                                                                                |
+| Production server          | Gunicorn                                                                                              |
+| Hosting                    | Render (web service + managed Postgres database)                                                      |
+| CI/CD                      | GitHub Actions -- test + lint, then a deploy job gated on them passing                                |
 
 ---
 
@@ -212,6 +226,8 @@ MANAGER_PASSWORD=choose_your_own_password
 ```
 
 `SECRET_KEY` signs and verifies every JWT (customer and mechanic alike). `MANAGER_EMAIL`/`MANAGER_PASSWORD` are read only by `seed.py`, to create the one manager account you'll actually want to remember the login for (see [Seed Data](#seed-data)). Treat all of these like passwords -- never commit real values.
+
+This covers local development (`DevelopmentConfig`, real MySQL). Running or testing against the production config locally additionally requires a `SQLALCHEMY_DATABASE_URI` line in the same `.env` file (Render's Postgres connection string) -- see [Deployment](#deployment).
 
 ### Run locally
 
@@ -502,8 +518,12 @@ Mechanic_project/
   .gitignore
   .pylintrc
   requirements.txt
-  config.py                   # DevelopmentConfig (MySQL) / TestingConfig (SQLite)
-  run.py                      # entry point: builds real MySQL tables, starts dev server
+  config.py                   # DevelopmentConfig (MySQL) / TestingConfig (SQLite) /
+                               # ProductionConfig (Postgres, read from env vars)
+  run.py                      # LOCAL entry point: builds real MySQL tables, starts
+                               # Flask's dev server (DevelopmentConfig)
+  flask_app.py                 # PRODUCTION entry point: gunicorn imports `app` from
+                                # here directly (ProductionConfig); no app.run() call
   seed.py                     # wipes + repopulates the database with Faker demo data
   Mechanic_Shop_API.postman_collection.json
   .github/
@@ -670,11 +690,57 @@ Every endpoint was also manually verified against the real running app and real 
 
 ---
 
-## CI
+## CI/CD
 
-`.github/workflows/ci.yml` runs on every push and pull request to `main`: installs dependencies from `requirements.txt`, then runs three gates in sequence -- the pytest suite, the separate `unittest` suite (`python -m unittest discover tests`), then Pylint. All three must pass for the workflow to succeed. `TestingConfig` sets its own fixed `SECRET_KEY`, so CI never needs the real one, and needs no database service or secrets configured at all.
+`.github/workflows/ci.yml` has two jobs, run on every push and pull request to `main`:
 
-Originally built ahead of any assignment requiring it (carried over from an earlier project's CI/CD habits). The "Intro to CI/CD and GitHub Actions" lesson later made a workflow like this an explicit requirement -- since one already existed, it was extended (the `unittest` suite added as its own explicit step, since it's deliberately excluded from pytest's own collection and would otherwise never run in CI at all) rather than rebuilt from scratch. There is no deploy stage: this API isn't hosted anywhere, so the workflow stays test/lint-only.
+1. **`test`** -- installs dependencies from `requirements.txt`, then runs three gates in sequence: the pytest suite, the separate `unittest` suite (`python -m unittest discover tests`), then Pylint. All three must pass for the job to succeed. `TestingConfig` sets its own fixed `SECRET_KEY`, so this job never needs the real one, and needs no database service or secrets configured at all.
+2. **`deploy`** -- depends on `test` (`needs: test`), and only runs on an actual push to `main` (not a pull request, so unmerged code is never deployed). If `test` fails, this job never runs at all. On success, it calls Render's deploy API directly (`johnbeynon/render-deploy-action`, authenticated with the `RENDER_API_KEY` and `SERVICE_ID` repository secrets) to trigger a real deployment of the live site.
+
+Originally built ahead of any assignment requiring it (carried over from an earlier project's CI/CD habits) as test-and-lint only. The "Intro to CI/CD and GitHub Actions" lesson later made a workflow like this an explicit requirement, and the "API Deployment and CI/CD Pipeline" assignment added the `deploy` job -- since a `test` job already existed, each was extended rather than rebuilt from scratch.
+
+Render also offers a built-in "After CI Checks Pass" auto-deploy option, which reads GitHub's own check status and deploys automatically with no separate job or secrets needed at all -- genuinely the simpler path. The explicit `deploy` job above was used instead: the assignment requires a GitHub Actions deploy job gated with `needs: test` by name, and more generally, this checkout → build → test → gated-deploy shape is the standard CI/CD pattern across providers, not something specific to Render -- worth knowing on its own terms, not just as a Render shortcut. Render's own Auto-Deploy setting is switched off, so this workflow is the only path to production.
+
+---
+
+## Deployment
+
+The API is live at **[mechanic-project.onrender.com](https://mechanic-project.onrender.com)**, with interactive documentation at **[mechanic-project.onrender.com/api/docs](https://mechanic-project.onrender.com/api/docs)**.
+
+Hosted on [Render](https://render.com): a free-tier web service running this app via Gunicorn, backed by a separate free-tier managed PostgreSQL database (also on Render). Both were provisioned manually through Render's dashboard, not via code -- there's no infrastructure-as-code file in this repo.
+
+### How local development and production differ
+
+|            | Local development (`run.py`)         | Production (`flask_app.py`)                           |
+| ---------- | ------------------------------------ | ----------------------------------------------------- |
+| Config     | `DevelopmentConfig`                  | `ProductionConfig`                                    |
+| Database   | Local MySQL                          | Render-hosted PostgreSQL                              |
+| Server     | Flask's own dev server (`app.run()`) | Gunicorn (`gunicorn flask_app:app`)                   |
+| Debug mode | On                                   | Explicitly off                                        |
+| Secrets    | `.env` file (gitignored)             | Real environment variables, set in Render's dashboard |
+
+`flask_app.py` exists specifically so gunicorn has a plain `app` object to import, with no `app.run()` call -- gunicorn _is_ the server, so calling `app.run()` there as well would start a redundant second server inside the first. `run.py` is untouched and still used for all local development.
+
+### A real deployment issue worth documenting
+
+`ProductionConfig`'s database URI isn't just `os.getenv("SQLALCHEMY_DATABASE_URI")` -- it rewrites the URL's scheme from `postgresql://` to `postgresql+psycopg2://` before SQLAlchemy ever sees it:
+
+```python
+_raw_db_uri = os.getenv("SQLALCHEMY_DATABASE_URI")
+SQLALCHEMY_DATABASE_URI = (
+    _raw_db_uri.replace("postgresql://", "postgresql+psycopg2://", 1)
+    if _raw_db_uri
+    else None
+)
+```
+
+Without this, the live deploy failed with `ModuleNotFoundError: No module named 'psycopg'` -- **not** `psycopg2`, the package actually installed. SQLAlchemy 2.0+ treats a bare `postgresql://` URL as a request for its newer default driver, `psycopg` (psycopg3, an entirely separate package from `psycopg2`), unless the URL names a driver explicitly. This project installs `psycopg2-binary` deliberately (see below), so the URL has to say so. This surfaced only once connecting to a real Postgres database -- local testing uses MySQL/SQLite, so nothing earlier in development could have caught it.
+
+Also: `psycopg2-binary` is used instead of plain `psycopg2`. The non-binary package compiles C extensions against system PostgreSQL libraries at install time; Render's build environment doesn't reliably have those available, and the build failed with `ModuleNotFoundError: No module named 'psycopg2'` until switched to `-binary`, which ships precompiled.
+
+### Redeploying
+
+Render's own Auto-Deploy is **off**. The only way to deploy is: push to `main`, let the `test` job in CI pass, and the `deploy` job (gated on it) triggers automatically. See [CI/CD](#cicd).
 
 ---
 
@@ -687,6 +753,7 @@ Ideas deliberately scoped out of this project, to keep each round of work focuse
 - **Enforced status transitions** (e.g. blocking a jump straight from "Pending" to "Paid") via a real state machine, rather than the current flat, freely-settable `status` field.
 - **A staff-side "anonymize this account" route** for a customer _with_ service history, for a legitimate privacy request or after a retention period -- today, only a customer with zero tickets can close their own account, by design; a manager-initiated path for the with-history case was deliberately left unbuilt.
 - **A richer junction between `Mechanic` and `ServiceTicket`**, upgrading `service_mechanics` from a `db.Table` (now with a composite primary key, but still just a link) to a full model, adding `assigned_at`, `role_on_ticket` (e.g. lead vs. assisting), and a separate per-mechanic work log (task description, date, hours) -- so "who did the hardest work" can be judged from real task detail and time spent, not just headcount. `TicketPart` (`Inventory` ↔ `ServiceTicket`) already demonstrates this same modeled-junction pattern for parts; this would apply the same idea to mechanic assignment.
+- **Auth0 as a frontend-facing auth provider**, covered in its own course lesson but marked not required for this project and deliberately left unbuilt. Auth0 is a _replacement_ authentication strategy, not an addition -- it would mean either running two competing auth systems side by side or rebuilding this project's existing, fully-tested two-token JWT model, and the lesson's own setup assumes a React frontend already wrapping itself in `<Auth0Provider>`, which this backend-only project doesn't have. The lesson frames it as something to return to "during your tech residency as you work with a frontend developer to connect both ends" -- exactly the scenario it would actually apply to, rather than a backend API with no frontend of its own.
 
 ### Ideas for production hardening
 
@@ -725,3 +792,6 @@ Two GitHub Copilot code review passes suggested improvements genuinely worth hav
 - [x] Business logic extracted into a service layer (`app/services/`), separate from route handlers, across all four blueprints
 - [x] Pylint clean (`python -m pylint app tests config.py`)
 - [x] CI workflow passing on GitHub Actions
+- [x] Deployed and live on Render, backed by a managed PostgreSQL database, served via Gunicorn
+- [x] Swagger docs' `host`/`schemes` updated to the live domain and `https`
+- [x] CI/CD: a `deploy` job in `ci.yml`, gated with `needs: test`, triggers a real deployment only after the full test suite and lint pass; Render's own Auto-Deploy is off so this is the only path to production

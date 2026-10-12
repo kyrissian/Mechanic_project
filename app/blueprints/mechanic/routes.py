@@ -104,13 +104,11 @@ def get_mechanics_by_ticket_count(_mechanic_id, _role):
     """Not cached: depends on shop-wide ticket-assignment activity,
     which changes constantly."""
     order = request.args.get("order", "desc")
-    mechanics = list(db.session.execute(select(Mechanic)).scalars().all())
-    mechanics.sort(key=lambda m: len(m.service_tickets), reverse=order != "asc")
-
-    result = [
-        mechanic_service.mechanic_summary(m, ticket_count=len(m.service_tickets))
-        for m in mechanics
-    ]
+    result = mechanic_service.sorted_mechanic_summaries(
+        order=order,
+        metric_fn=lambda mechanic: len(mechanic.service_tickets),
+        metric_field_name="ticket_count",
+    )
     return jsonify(result), 200
 
 
@@ -120,18 +118,13 @@ def get_mechanics_by_open_ticket_count(_mechanic_id, _role):
     """Open = Pending, In Progress, or Completed but not yet paid --
     a rough measure of current workload."""
     order = request.args.get("order", "desc")
-    mechanics = list(db.session.execute(select(Mechanic)).scalars().all())
-    mechanics.sort(
-        key=lambda m: mechanic_service.count_tickets_by_status(m, OPEN_STATUSES),
-        reverse=order != "asc",
+    result = mechanic_service.sorted_mechanic_summaries(
+        order=order,
+        metric_fn=lambda mechanic: mechanic_service.count_tickets_by_status(
+            mechanic, OPEN_STATUSES
+        ),
+        metric_field_name="open_ticket_count",
     )
-
-    result = [
-        mechanic_service.mechanic_summary(
-            m, open_ticket_count=mechanic_service.count_tickets_by_status(m, OPEN_STATUSES)
-        )
-        for m in mechanics
-    ]
     return jsonify(result), 200
 
 
@@ -140,18 +133,13 @@ def get_mechanics_by_open_ticket_count(_mechanic_id, _role):
 def get_mechanics_by_closed_ticket_count(_mechanic_id, _role):
     """Closed = Paid or Picked Up -- completed, paid-for work."""
     order = request.args.get("order", "desc")
-    mechanics = list(db.session.execute(select(Mechanic)).scalars().all())
-    mechanics.sort(
-        key=lambda m: mechanic_service.count_tickets_by_status(m, CLOSED_STATUSES),
-        reverse=order != "asc",
+    result = mechanic_service.sorted_mechanic_summaries(
+        order=order,
+        metric_fn=lambda mechanic: mechanic_service.count_tickets_by_status(
+            mechanic, CLOSED_STATUSES
+        ),
+        metric_field_name="closed_ticket_count",
     )
-
-    result = [
-        mechanic_service.mechanic_summary(
-            m, closed_ticket_count=mechanic_service.count_tickets_by_status(m, CLOSED_STATUSES)
-        )
-        for m in mechanics
-    ]
     return jsonify(result), 200
 
 

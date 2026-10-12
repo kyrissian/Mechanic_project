@@ -34,6 +34,21 @@ from app.utils.pagination import paginate_query
 from app.utils.util import manager_required, mechanic_token_required
 
 
+def _get_ticket_and_mechanic_or_error(ticket_id, mechanic_id):
+    """Shared pre-check for assignment endpoints: they both require
+    a real ticket and a real mechanic before any membership rule can
+    be evaluated."""
+    ticket = db.session.get(ServiceTicket, ticket_id)
+    if not ticket:
+        return None, None, (jsonify({"error": "Service ticket not found."}), 404)
+
+    mechanic = db.session.get(Mechanic, mechanic_id)
+    if not mechanic:
+        return None, None, (jsonify({"error": "Mechanic not found."}), 404)
+
+    return ticket, mechanic, None
+
+
 @service_ticket_bp.route("", methods=["POST"])
 @manager_required
 def create_service_ticket(_manager_id):
@@ -192,13 +207,9 @@ def assign_mechanic(_manager_id, ticket_id, mechanic_id):
     """Who works which ticket is a staffing decision, not something
     an ordinary mechanic should be able to change -- same reasoning
     as the bulk /edit route below."""
-    ticket = db.session.get(ServiceTicket, ticket_id)
-    if not ticket:
-        return jsonify({"error": "Service ticket not found."}), 404
-
-    mechanic = db.session.get(Mechanic, mechanic_id)
-    if not mechanic:
-        return jsonify({"error": "Mechanic not found."}), 404
+    ticket, mechanic, error = _get_ticket_and_mechanic_or_error(ticket_id, mechanic_id)
+    if error:
+        return error
 
     if mechanic in ticket.mechanics:
         return jsonify({"error": "Mechanic is already assigned to this ticket."}), 400
@@ -213,14 +224,11 @@ def assign_mechanic(_manager_id, ticket_id, mechanic_id):
 )
 @manager_required
 def remove_mechanic(_manager_id, ticket_id, mechanic_id):
-    """Manager-only."""
-    ticket = db.session.get(ServiceTicket, ticket_id)
-    if not ticket:
-        return jsonify({"error": "Service ticket not found."}), 404
-
-    mechanic = db.session.get(Mechanic, mechanic_id)
-    if not mechanic:
-        return jsonify({"error": "Mechanic not found."}), 404
+    """Manager-only for the same staffing-control reason as assign:
+    assignment ownership is managed centrally, not peer-to-peer."""
+    ticket, mechanic, error = _get_ticket_and_mechanic_or_error(ticket_id, mechanic_id)
+    if error:
+        return error
 
     if mechanic not in ticket.mechanics:
         return jsonify({"error": "Mechanic is not assigned to this ticket."}), 400

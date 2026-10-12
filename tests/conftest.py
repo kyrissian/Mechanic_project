@@ -46,6 +46,7 @@ from config import TestingConfig
 # total.
 collect_ignore = ["unittest_suite"]
 
+
 class RateLimitedTestConfig(TestingConfig):
     """TestingConfig with rate limiting switched back on."""
 
@@ -147,16 +148,25 @@ def make_mechanic_kwargs(**overrides):
     return defaults
 
 
+def _name_email_for_index(index, default_name, default_email, label):
+    """Shared test-data convention for generating deterministic,
+    unique name/email pairs when a test needs multiple records of the
+    same type."""
+    if index is None:
+        return default_name, default_email
+    return f"{label} {index}", f"{label.lower()}{index}@example.com"
+
+
 def make_mechanic_payload(index=None, **overrides):
     """Default JSON body for creating/updating a mechanic via the
     API. Pass index for a unique name/email. role defaults to
     "mechanic"."""
-    if index is None:
-        name = "Alex Chen"
-        email = "alex@example.com"
-    else:
-        name = f"Mechanic {index}"
-        email = f"mechanic{index}@example.com"
+    name, email = _name_email_for_index(
+        index,
+        default_name="Alex Chen",
+        default_email="alex@example.com",
+        label="Mechanic",
+    )
 
     payload = {
         "name": name,
@@ -185,12 +195,12 @@ def make_customer_kwargs(**overrides):
 
 def make_customer_payload(index=None, **overrides):
     """Default JSON body for creating/updating a customer via the API."""
-    if index is None:
-        name = "Jamie Rivera"
-        email = "jamie@example.com"
-    else:
-        name = f"Customer {index}"
-        email = f"customer{index}@example.com"
+    name, email = _name_email_for_index(
+        index,
+        default_name="Jamie Rivera",
+        default_email="jamie@example.com",
+        label="Customer",
+    )
 
     payload = {
         "name": name,
@@ -207,12 +217,24 @@ def login_customer(client, **overrides):  # pylint: disable=redefined-outer-name
     (customer_id, auth_headers)."""
     payload = make_customer_payload(**overrides)
     created = client.post("/customers", json=payload).json
-    login_response = client.post(
+    headers = auth_headers_from_login(
+        client,
         "/customers/login",
-        json={"email": payload["email"], "password": payload["password"]},
+        payload["email"],
+        payload["password"],
+    )
+    return created["id"], headers
+
+
+def auth_headers_from_login(client, login_path, email, password):
+    """Log in through a route and return a ready Authorization
+    header, so tests build Bearer headers the same way everywhere."""
+    login_response = client.post(
+        login_path,
+        json={"email": email, "password": password},
     )
     token = login_response.json["auth_token"]
-    return created["id"], {"Authorization": f"Bearer {token}"}
+    return {"Authorization": f"Bearer {token}"}
 
 
 def seed_manager(db, **overrides):  # pylint: disable=redefined-outer-name
@@ -243,12 +265,13 @@ def create_manager(client, db, **overrides):  # pylint: disable=redefined-outer-
     """Bootstrap a manager account (seed_manager) and log them in
     through the real API. Returns (manager_id, auth_headers)."""
     manager_obj, password = seed_manager(db, **overrides)
-    login_response = client.post(
+    headers = auth_headers_from_login(
+        client,
         "/mechanics/login",
-        json={"email": manager_obj.email, "password": password},
+        manager_obj.email,
+        password,
     )
-    token = login_response.json["auth_token"]
-    return manager_obj.id, {"Authorization": f"Bearer {token}"}
+    return manager_obj.id, headers
 
 
 def create_mechanic(client, manager_headers, **overrides):
@@ -257,12 +280,13 @@ def create_mechanic(client, manager_headers, **overrides):
     them in. Returns (mechanic_id, auth_headers)."""
     payload = make_mechanic_payload(**overrides)
     created = client.post("/mechanics", json=payload, headers=manager_headers).json
-    login_response = client.post(
+    headers = auth_headers_from_login(
+        client,
         "/mechanics/login",
-        json={"email": payload["email"], "password": payload["password"]},
+        payload["email"],
+        payload["password"],
     )
-    token = login_response.json["auth_token"]
-    return created["id"], {"Authorization": f"Bearer {token}"}
+    return created["id"], headers
 
 
 @pytest.fixture

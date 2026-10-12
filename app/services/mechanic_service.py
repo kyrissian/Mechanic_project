@@ -30,3 +30,16 @@ def mechanic_summary(mechanic, **extra_fields):
     sorting endpoints are open to any mechanic and sorting by
     workload doesn't require seeing anyone's pay."""
     return {"id": mechanic.id, "name": mechanic.name, **extra_fields}
+
+
+def sorted_mechanic_summaries(order, metric_fn, metric_field_name):
+    """Builds the response payload for all ticket-count sorting
+    endpoints from one shared implementation, so changes to ordering
+    behavior or response shape stay consistent across all three."""
+    mechanics = list(db.session.execute(select(Mechanic)).scalars().all())
+    with_metrics = [(mechanic, metric_fn(mechanic)) for mechanic in mechanics]
+    with_metrics.sort(key=lambda pair: pair[1], reverse=order != "asc")
+    return [
+        mechanic_summary(mechanic, **{metric_field_name: metric})
+        for mechanic, metric in with_metrics
+    ]

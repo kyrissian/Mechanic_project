@@ -1,8 +1,10 @@
 """Tests for rate limiting: route-specific limits on customer/mechanic
 create and delete, plus the global default applied to every route."""
 
+import pytest
+
 from app.extensions import db as _db
-from tests.conftest import make_customer_payload, make_mechanic_payload, seed_manager
+from tests.conftest import create_manager, make_customer_payload, make_mechanic_payload
 
 
 def test_create_customer_blocked_after_five_requests(rate_limited_client):
@@ -36,11 +38,7 @@ def test_limit_only_applies_to_customer_creation(rate_limited_client):
     for i in range(6):
         rate_limited_client.post("/customers", json=make_customer_payload(i))
 
-    manager_obj, password = seed_manager(_db)
-    login_response = rate_limited_client.post(
-        "/mechanics/login", json={"email": manager_obj.email, "password": password}
-    )
-    manager_headers = {"Authorization": f"Bearer {login_response.json['auth_token']}"}
+    _, manager_headers = create_manager(rate_limited_client, _db)
 
     mechanic_response = rate_limited_client.post(
         "/mechanics", json=make_mechanic_payload(), headers=manager_headers
@@ -73,11 +71,7 @@ def test_create_mechanic_blocked_after_five_requests(rate_limited_client):
     """POST /mechanics carries the same 5-per-hour limit as customer
     creation. A manager is bootstrapped directly (that insert doesn't
     touch the API, so it never counts toward the limit)."""
-    manager_obj, password = seed_manager(_db)
-    login_response = rate_limited_client.post(
-        "/mechanics/login", json={"email": manager_obj.email, "password": password}
-    )
-    manager_headers = {"Authorization": f"Bearer {login_response.json['auth_token']}"}
+    _, manager_headers = create_manager(rate_limited_client, _db)
 
     for i in range(5):
         response = rate_limited_client.post(
@@ -96,29 +90,24 @@ def test_create_mechanic_blocked_after_five_requests(rate_limited_client):
     assert response.status_code == 429
 
 
-def test_delete_customer_blocked_after_ten_requests(rate_limited_client):
-    """The 11th DELETE /customers/<id> within an hour returns 429,
-    even with no token supplied. The limiter runs before
-    token_required, so every attempt counts regardless of the 401
-    each one returns."""
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/customers/999",
+        "/mechanics/999",
+        "/inventory/999",
+    ],
+    ids=["customers-delete", "mechanics-delete", "inventory-delete"],
+)
+def test_delete_routes_blocked_after_ten_requests(rate_limited_client, path):
+    """Each delete route has a 10/hour limit; the 11th request gets
+    429, and even the first 10 failed auth attempts count because
+    auth decorators run after the limiter."""
     for _ in range(10):
-        response = rate_limited_client.delete("/customers/999")
+        response = rate_limited_client.delete(path)
         assert response.status_code == 401
 
-    response = rate_limited_client.delete("/customers/999")
-
-    assert response.status_code == 429
-
-
-def test_delete_mechanic_blocked_after_ten_requests(rate_limited_client):
-    """Same guarantee as the customer delete limit, for mechanics.
-    The limiter is the outer decorator on delete_mechanic, so
-    unauthenticated attempts (401) still count toward the limit."""
-    for _ in range(10):
-        response = rate_limited_client.delete("/mechanics/999")
-        assert response.status_code == 401
-
-    response = rate_limited_client.delete("/mechanics/999")
+    response = rate_limited_client.delete(path)
 
     assert response.status_code == 429
 
@@ -128,26 +117,9 @@ def test_default_limit_applies_to_unlimited_routes(rate_limited_client):
     /customers -- still carries the global default (200/day, 50/hour)
     set on the Limiter itself, shown by rate-limit headers being
     present even though nothing decorates the route directly."""
-    manager_obj, password = seed_manager(_db)
-    login_response = rate_limited_client.post(
-        "/mechanics/login", json={"email": manager_obj.email, "password": password}
-    )
-    manager_headers = {"Authorization": f"Bearer {login_response.json['auth_token']}"}
+    _, manager_headers = create_manager(rate_limited_client, _db)
 
     response = rate_limited_client.get("/customers", headers=manager_headers)
 
     assert response.status_code == 200
     assert "X-RateLimit-Limit" in response.headers
-
-
-def test_delete_inventory_blocked_after_ten_requests(rate_limited_client):
-    """DELETE /inventory/<id> carries the same 10-per-hour limit as the
-    other delete routes. The limiter is the outer decorator, so
-    unauthenticated attempts (401) still count toward it."""
-    for _ in range(10):
-        response = rate_limited_client.delete("/inventory/999")
-        assert response.status_code == 401
-
-    response = rate_limited_client.delete("/inventory/999")
-
-    assert response.status_code == 429
