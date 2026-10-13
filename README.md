@@ -709,6 +709,17 @@ The API is live at **[mechanic-project.onrender.com](https://mechanic-project.on
 
 Hosted on [Render](https://render.com): a free-tier web service running this app via Gunicorn, backed by a separate free-tier managed PostgreSQL database (also on Render). Both were provisioned manually through Render's dashboard, not via code -- there's no infrastructure-as-code file in this repo.
 
+### Demo Credentials for Grading
+
+There's no API route to create the first manager account -- by design, every mechanic account after the first is created by an existing manager (see [Roles & Authorization](#roles--authorization)). To let a grader exercise manager-only routes against the live API without needing to seed their own account, here's a manager account created specifically for this purpose:
+
+```
+email: manager@demo.com
+password: manager
+```
+
+Log in via `POST /mechanics/login` on the [live Swagger docs](https://mechanic-project.onrender.com/api/docs), then use the "Authorize" button with the returned token (`Bearer <token>`) to access manager-only endpoints (creating mechanics, viewing the full roster with salaries, creating service tickets, managing inventory, etc.). This account exists only for grading/demo purposes and isn't tied to a real person.
+
 ### How local development and production differ
 
 |            | Local development (`run.py`)         | Production (`flask_app.py`)                           |
