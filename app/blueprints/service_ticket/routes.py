@@ -29,7 +29,7 @@ from app.blueprints.service_ticket.schemas import (
     ticket_details_update_schema,
     ticket_mechanic_edit_schema,
 )
-from app.utils.errors import validation_error_response
+from app.utils.errors import not_found_response, validation_error_response
 from app.utils.pagination import paginate_query
 from app.utils.util import manager_required, mechanic_token_required
 
@@ -40,11 +40,11 @@ def _get_ticket_and_mechanic_or_error(ticket_id, mechanic_id):
     be evaluated."""
     ticket = db.session.get(ServiceTicket, ticket_id)
     if not ticket:
-        return None, None, (jsonify({"error": "Service ticket not found."}), 404)
+        return None, None, not_found_response("Service ticket")
 
     mechanic = db.session.get(Mechanic, mechanic_id)
     if not mechanic:
-        return None, None, (jsonify({"error": "Mechanic not found."}), 404)
+        return None, None, not_found_response("Mechanic")
 
     return ticket, mechanic, None
 
@@ -60,7 +60,7 @@ def create_service_ticket(_manager_id):
         return validation_error_response(e)
 
     if not service_ticket_service.customer_is_active(ticket_data["customer_id"]):
-        return jsonify({"error": "Customer not found."}), 404
+        return not_found_response("Customer")
 
     new_ticket = ServiceTicket(**ticket_data)
     db.session.add(new_ticket)
@@ -105,7 +105,7 @@ def get_service_ticket(_mechanic_id, _role, ticket_id):
     ticket = db.session.get(ServiceTicket, ticket_id)
     if ticket:
         return service_ticket_schema.jsonify(ticket), 200
-    return jsonify({"error": "Service ticket not found."}), 404
+    return not_found_response("Service ticket")
 
 
 @service_ticket_bp.route("/<int:ticket_id>", methods=["PUT"])
@@ -116,7 +116,7 @@ def update_ticket_details(_manager_id, ticket_id):
     succeeding."""
     ticket = db.session.get(ServiceTicket, ticket_id)
     if not ticket:
-        return jsonify({"error": "Service ticket not found."}), 404
+        return not_found_response("Service ticket")
 
     try:
         update_data = ticket_details_update_schema.load(request.json)
@@ -140,7 +140,7 @@ def update_ticket_status(mechanic_id, role, ticket_id):
     assignment rule."""
     ticket = db.session.get(ServiceTicket, ticket_id)
     if not ticket:
-        return jsonify({"error": "Service ticket not found."}), 404
+        return not_found_response("Service ticket")
 
     if role != "manager" and not service_ticket_service.mechanic_is_assigned(
         ticket, mechanic_id
@@ -171,10 +171,10 @@ def add_part_to_ticket(requester_id, role, ticket_id, inventory_id):
     price-snapshot rules."""
     ticket = db.session.get(ServiceTicket, ticket_id)
     if not ticket:
-        return jsonify({"error": "Service ticket not found."}), 404
+        return not_found_response("Service ticket")
 
     if not db.session.get(Inventory, inventory_id):
-        return jsonify({"error": "Part not found."}), 404
+        return not_found_response("Part")
 
     if role != "manager" and not service_ticket_service.mechanic_is_assigned(
         ticket, requester_id
@@ -248,7 +248,7 @@ def edit_ticket_mechanics(_manager_id, ticket_id):
     service_ticket_service.resolve_mechanics_or_error."""
     ticket = db.session.get(ServiceTicket, ticket_id)
     if not ticket:
-        return jsonify({"error": "Service ticket not found."}), 404
+        return not_found_response("Service ticket")
 
     try:
         edit_data = ticket_mechanic_edit_schema.load(request.json)
@@ -259,13 +259,13 @@ def edit_ticket_mechanics(_manager_id, ticket_id):
         edit_data["add_ids"]
     )
     if missing_id is not None:
-        return jsonify({"error": f"Mechanic id {missing_id} not found."}), 404
+        return not_found_response("Mechanic", f"id {missing_id}")
 
     to_remove, missing_id = service_ticket_service.resolve_mechanics_or_error(
         edit_data["remove_ids"]
     )
     if missing_id is not None:
-        return jsonify({"error": f"Mechanic id {missing_id} not found."}), 404
+        return not_found_response("Mechanic", f"id {missing_id}")
 
     for mechanic in to_add:
         if mechanic not in ticket.mechanics:

@@ -18,3 +18,19 @@ def validation_error_response(e):
     in the same {"error": ...} envelope every other failure uses.
     """
     return jsonify({"error": "Validation failed.", "details": e.messages}), 400
+
+
+def not_found_response(resource, detail=None):
+    """Build a standard 404 for "X not found", shared by every
+    blueprint -- previously each route built this same
+    jsonify({"error": "..."}), 404 shape inline, with the resource
+    name as the only thing that varied.
+
+    `detail`, when given, is folded into the message as extra
+    identifying context (not_found_response("Mechanic", "id 7") ->
+    "Mechanic id 7 not found."), for the handful of call sites that
+    need to name which id was missing rather than just the resource
+    type.
+    """
+    message = f"{resource} not found." if detail is None else f"{resource} {detail} not found."
+    return jsonify({"error": message}), 404

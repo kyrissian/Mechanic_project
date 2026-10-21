@@ -3,19 +3,16 @@ Business logic for the Inventory resource. See
 app/services/__init__.py for why this layer exists.
 """
 
-from sqlalchemy import select
-
-from app.extensions import db
 from app.models.inventory import Inventory
+from app.services.uniqueness import value_taken
 
 
 def name_taken(name, exclude_id=None):
     """Compared case-insensitively, so "Oil Filter" and "oil filter"
     can't both exist. exclude_id lets an update keep its own name."""
-    query = select(Inventory).where(db.func.lower(Inventory.name) == name.lower())
-    if exclude_id is not None:
-        query = query.where(Inventory.id != exclude_id)
-    return db.session.execute(query).scalars().first() is not None
+    return value_taken(
+        Inventory, Inventory.name, name, exclude_id=exclude_id, case_insensitive=True
+    )
 
 
 def has_been_used(part):

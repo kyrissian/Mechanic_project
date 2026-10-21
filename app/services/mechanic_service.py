@@ -7,16 +7,14 @@ from sqlalchemy import select
 
 from app.extensions import db
 from app.models.mechanic import Mechanic
+from app.services.uniqueness import value_taken
 
 
 def email_taken(email, exclude_id=None):
     """When updating a mechanic, the duplicate-email check must
     ignore that mechanic's own current row -- otherwise keeping an
     unchanged email would look like a conflict with itself."""
-    query = select(Mechanic).where(Mechanic.email == email)
-    if exclude_id is not None:
-        query = query.where(Mechanic.id != exclude_id)
-    return db.session.execute(query).scalars().first() is not None
+    return value_taken(Mechanic, Mechanic.email, email, exclude_id=exclude_id)
 
 
 def count_tickets_by_status(mechanic, statuses):

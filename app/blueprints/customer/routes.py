@@ -36,7 +36,7 @@ from app.services import customer_service
 from app.blueprints.customer import customer_bp
 from app.blueprints.customer.schemas import customer_schema, customers_schema, login_schema
 from app.blueprints.service_ticket.schemas import service_tickets_schema
-from app.utils.errors import validation_error_response
+from app.utils.errors import not_found_response, validation_error_response
 from app.utils.pagination import paginate_query
 from app.utils.util import encode_token, mechanic_token_required, token_required
 
@@ -108,7 +108,7 @@ def get_customer(_mechanic_id, _role, customer_id):
     customer = db.session.get(Customer, customer_id)
     if customer and customer.is_active:
         return customer_schema.jsonify(customer), 200
-    return jsonify({"error": "Customer not found."}), 404
+    return not_found_response("Customer")
 
 
 @customer_bp.route("/my-tickets", methods=["GET"])
@@ -135,7 +135,7 @@ def update_customer(token_customer_id, customer_id):
 
     customer = db.session.get(Customer, customer_id)
     if not customer or not customer.is_active:
-        return jsonify({"error": "Customer not found."}), 404
+        return not_found_response("Customer")
 
     try:
         customer_data = customer_schema.load(request.json)
@@ -165,7 +165,7 @@ def delete_customer(token_customer_id, customer_id):
 
     customer = db.session.get(Customer, customer_id)
     if not customer or not customer.is_active:
-        return jsonify({"error": "Customer not found."}), 404
+        return not_found_response("Customer")
 
     if customer_service.has_service_history(customer_id):
         return (

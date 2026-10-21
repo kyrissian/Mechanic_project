@@ -46,6 +46,18 @@ A Flask + SQLAlchemy + MySQL backend for a mechanic shop, with role-based JWT au
 
 ## Changelog
 
+### 2026-10-21: Monitoring, Coverage Gate, and Automated Rollback
+
+Addresses grading feedback on the "API Deployment and CI/CD Pipeline" assignment: both Deployment and CI/CD Pipeline scored "Proficient" (80%), with specific suggestions for reaching "Exemplary" (monitoring/alerting on deployment, additional pipeline stages, clearer documentation). All three are addressed below.
+
+- **Monitoring:** Added `GET /health` (`app/blueprints/health/`), an unauthenticated, rate-limit-exempt endpoint that checks real database connectivity (not just "the process is running") and returns 200/`{"status": "ok"}` or 503 with an error detail. Meant to be polled every few minutes by an external uptime monitor (e.g. UptimeRobot, Better Uptime), which alerts the moment the live site stops responding -- catching an outage between deploys, which neither CI nor the `deploy` job's own success/failure can see.
+- **Structured logging:** Added `app/logging_config.py`. Every request now logs one INFO line (`METHOD path -> status (duration)`) tagged with a short correlation ID, and that same ID is echoed back as an `X-Request-ID` response header -- so a bug report ("my request failed") can be matched to the exact server-side log line, including any traceback the existing unhandled-exception handler (`error_handlers.py`) logs. Render's own Logs tab is where these are read in practice; see [Monitoring](#monitoring).
+- **CI/CD pipeline, two new gates:**
+  - Coverage is now measured and enforced in the same step as the pytest suite (`--cov=app --cov-fail-under=90`), with the report uploaded as a build artifact. Threshold set a few points under this suite's actual ~97%, so it still catches a real regression (e.g. a new blueprint shipped with no tests) without failing CI over routine day-to-day coverage fluctuation.
+  - A new `rollback` job runs only if `deploy` itself fails (`needs: deploy`, gated on `needs.deploy.result == 'failure'`): it queries Render's API for the most recent deploy still marked `live`, then calls Render's rollback endpoint to restore it automatically, without needing to notice the failure and roll back by hand first.
+- Linting (Pylint) was already a pipeline stage before this round of changes -- not newly added, despite being one of the feedback's example suggestions.
+- `tests/test_health.py` added (2 tests: healthy-database and simulated-outage cases) for the new endpoint. Suite totals: pytest **198** (196 + 2 new), unittest suite unaffected at **62**.
+
 ### 2026-10-11: Live Deployment on Render, Full CI/CD Pipeline
 
 - The API is now deployed and publicly reachable, running on [Render](https://render.com), backed by a managed Postgres database (also hosted on Render) instead of the local MySQL used in development. See [Deployment](#deployment) for the live URL and how the deployment is configured.
@@ -374,6 +386,14 @@ All request/response bodies are JSON. Routes marked 🔒 require a valid Bearer 
 
 Deliberately no full `PUT`/`DELETE` for the ticket resource itself -- only the scoped detail/status/mechanic/part routes above -- so a completed or in-progress service record is never silently overwritten or erased wholesale.
 
+### Health (`/health`)
+
+| Method | URL       | Purpose                                                    |
+| ------ | --------- | ---------------------------------------------------------- |
+| GET    | `/health` | Uptime check -- 200 if the database is reachable, else 503 |
+
+Unauthenticated and exempt from rate limiting, by design -- see [Monitoring](#monitoring).
+
 ---
 
 ## Interactive Documentation (Swagger)
@@ -534,6 +554,8 @@ Mechanic_project/
                                 # Swagger UI blueprint at /api/docs
     extensions.py               # shared db / ma / limiter / cache instances
     error_handlers.py           # global JSON error handlers
+    logging_config.py           # structured stdout logging + per-request
+                                 # correlation IDs (X-Request-ID)
     static/
       swagger.yaml               # OpenAPI/Swagger 2.0 spec -- every path and
                                  # definition for all four resources
@@ -580,6 +602,9 @@ Mechanic_project/
         __init__.py
         routes.py                 # CRUD, manager-gated writes
         schemas.py                # InventorySchema
+      health/
+        __init__.py
+        routes.py                 # GET /health -- db connectivity check for uptime monitoring
   tests/
     __init__.py
     conftest.py                 # fixtures, payload helpers, manager/mechanic bootstrap
@@ -601,6 +626,7 @@ Mechanic_project/
     test_error_handlers.py
     test_service_mechanics.py    # composite-PK uniqueness at the DB level
     test_services.py             # direct unit tests for app/services/, no Flask/HTTP
+    test_health.py                # /health: db-reachable and simulated-outage cases
     unittest_suite/              # separate unittest-based suite (see Testing section);
       __init__.py                 # required so `unittest discover` finds this package;
                                    # pytest skips it entirely via conftest.py's collect_ignore
@@ -692,10 +718,11 @@ Every endpoint was also manually verified against the real running app and real 
 
 ## CI/CD
 
-`.github/workflows/ci_cd.yml` has two jobs, run on every push and pull request to `main`:
+`.github/workflows/ci_cd.yml` has three jobs, run on every push and pull request to `main`:
 
-1. **`test`** -- installs dependencies from `requirements.txt`, then runs three gates in sequence: the pytest suite, the separate `unittest` suite (`python -m unittest discover tests`), then Pylint. All three must pass for the job to succeed. `TestingConfig` sets its own fixed `SECRET_KEY`, so this job never needs the real one, and needs no database service or secrets configured at all.
+1. **`test`** -- installs dependencies from `requirements.txt`, then runs four gates in sequence: the pytest suite (with coverage measured and enforced via `--cov-fail-under=90`, a report uploaded as a build artifact), the separate `unittest` suite (`python -m unittest discover tests`), then Pylint. All must pass for the job to succeed. `TestingConfig` sets its own fixed `SECRET_KEY`, so this job never needs the real one, and needs no database service or secrets configured at all.
 2. **`deploy`** -- depends on `test` (`needs: test`), and only runs on an actual push to `main` (not a pull request, so unmerged code is never deployed). If `test` fails, this job never runs at all. On success, it calls Render's deploy API directly (`johnbeynon/render-deploy-action`, authenticated with the `RENDER_API_KEY` and `SERVICE_ID` repository secrets) to trigger a real deployment of the live site.
+3. **`rollback`** -- depends on `deploy` (`needs: deploy`), and only runs if `deploy` itself failed (`if: failure() && needs.deploy.result == 'failure'`) -- not if `test` failed upstream and `deploy` never ran at all, since in that case production is still running whatever deployed successfully last time and there's nothing new to roll back from. When it does run, it calls Render's API directly: first `GET .../deploys?status=live` to find the most recent deploy that was actually serving traffic successfully, then `POST .../rollback` with that deploy's id to restore it -- automatically, without anyone needing to notice the failed deploy and roll back by hand first.
 
 Originally built ahead of any assignment requiring it (carried over from an earlier project's CI/CD habits) as test-and-lint only. The "Intro to CI/CD and GitHub Actions" lesson later made a workflow like this an explicit requirement, and the "API Deployment and CI/CD Pipeline" assignment added the `deploy` job -- since a `test` job already existed, each was extended rather than rebuilt from scratch.
 
@@ -753,6 +780,15 @@ Also: `psycopg2-binary` is used instead of plain `psycopg2`. The non-binary pack
 
 Render's own Auto-Deploy is **off**. The only way to deploy is: push to `main`, let the `test` job in CI pass, and the `deploy` job (gated on it) triggers automatically. See [CI/CD](#cicd).
 
+### Monitoring
+
+Two separate layers catch two separate kinds of failure:
+
+- **A bad deploy** (new code that's broken) is caught by CI itself: the `test` job gates `deploy`, and if a push to `main` somehow still results in a failed `deploy`, the `rollback` job (see [CI/CD](#cicd)) automatically restores the last known-good deploy without anyone needing to notice and act first.
+- **The live site going down between deploys** (the database sleeping, the free-tier instance spinning down, an unrelated outage) is what `GET /health` is for -- it checks real database connectivity, not just "the process is running," and is meant to be polled every few minutes by a free external uptime monitor (e.g. [UptimeRobot](https://uptimerobot.com)) configured to alert on anything other than a 200. This project doesn't wire up an actual monitor account (that's a one-time manual setup step outside the codebase, not something to automate), but the endpoint it would poll already exists and is tested (`tests/test_health.py`).
+
+Beyond uptime, every request is logged as a single structured line (`app/logging_config.py`): method, path, status code, and duration, tagged with a short request-correlation ID that's also echoed back to the client as an `X-Request-ID` response header. Render's own **Logs** tab (Dashboard → service → Logs) is where these are read in practice -- there's no separate logging service wired up, which would be real added value at a larger scale but is out of scope for a single-service project like this one (see [Future Extensions](#future-extensions)). The same correlation ID is attached to whatever an unhandled exception logs (`error_handlers.py`'s existing `app.logger.exception` call), so a user-reported failure and its server-side traceback can be matched by ID rather than by guessing from a timestamp.
+
 ---
 
 ## Future Extensions
@@ -768,13 +804,12 @@ Ideas deliberately scoped out of this project, to keep each round of work focuse
 
 ### Ideas for production hardening
 
-Two GitHub Copilot code review passes suggested improvements genuinely worth having in a real deployment, but out of scope for this project as a course submission. Recorded here rather than built. Two items this list previously held -- a service layer and OpenAPI/Swagger documentation -- have since been acted on (see the Changelog) and are no longer listed as deferred.
+Two GitHub Copilot code review passes suggested improvements genuinely worth having in a real deployment, but out of scope for this project as a course submission. Recorded here rather than built. Three items this list previously held -- a service layer, OpenAPI/Swagger documentation, and request correlation IDs -- have since been acted on (see the Changelog) and are no longer listed as deferred.
 
 - **Optimistic concurrency on `PUT` routes** (an ETag or `updated_at` check), to prevent one update from silently overwriting another made a moment earlier.
 - **A standardized error-response contract** across every blueprint -- a consistent shape (code, message, details, field names where relevant), centralized via custom exception classes or a single API-error helper, rather than each route independently building its own `jsonify({"error": ...})` call. Would also make the Swagger docs' error examples more uniform than they are today.
-- **Structured audit logging** for sensitive actions -- role changes, deletions, ticket status transitions, inventory mutations -- so there's a record of who changed what and when, beyond what the database itself shows.
+- **Structured audit logging** for sensitive actions -- role changes, deletions, ticket status transitions, inventory mutations -- so there's a record of who changed what and when, beyond what the database itself shows. (Distinct from the per-request logging added in the 2026-10-21 changelog entry: that logs every request/response at the transport level; this would be a second, business-level log of specifically who changed what domain data.)
 - **Enforced ticket status transitions** via a real state machine (e.g. disallowing a jump backward from `Paid` to `In Progress`), already noted above as its own item.
-- **Request correlation IDs**, included in error responses and server-side logs, to make a single request traceable end to end.
 - **Performance testing and indexing** for the sorting/pagination endpoints at real scale (e.g. indexes on `status`, `customer_id`, and the junction tables), since none of this project's endpoints have been load-tested.
 - **Redis-backed cache and rate-limit stores**, replacing the current in-memory ones -- necessary for correctness the moment this API runs as more than one process, since in-memory state isn't shared across processes.
 - **Expanded test coverage**: malformed-JSON bodies, empty-body edge cases beyond the ones already covered, pagination boundary values, and negative-number cases for every numeric field (not just the ones already tested), plus asserting exact error-message text (not just status codes) on the highest-value negative tests, such as duplicate-name and not-found cases.
@@ -798,7 +833,7 @@ Two GitHub Copilot code review passes suggested improvements genuinely worth hav
 - [x] `seed.py`: Faker-driven demo data with a documented, predictable local password scheme
 - [x] Postman collection included in the repo and covers every endpoint, including auth, role-rejection, and business-rule-conflict cases
 - [x] Interactive Swagger documentation at `/api/docs`, covering every endpoint's paths, request/response definitions, and error cases, verified live against the running server
-- [x] 196 automated tests passing (`python -m pytest -v`)
+- [x] 198 automated tests passing (`python -m pytest -v`), with coverage measured and enforced in CI (`--cov-fail-under=90`, actual ~97%)
 - [x] Separate `unittest`-based suite (62 tests, one file per blueprint) passing via `python -m unittest discover tests`, per the TDD assignment's literal requirement
 - [x] Business logic extracted into a service layer (`app/services/`), separate from route handlers, across all four blueprints
 - [x] Pylint clean (`python -m pylint app tests config.py`)
@@ -806,3 +841,5 @@ Two GitHub Copilot code review passes suggested improvements genuinely worth hav
 - [x] Deployed and live on Render, backed by a managed PostgreSQL database, served via Gunicorn
 - [x] Swagger docs' `host`/`schemes` updated to the live domain and `https`
 - [x] CI/CD: a `deploy` job in `ci_cd.yml`, gated with `needs: test`, triggers a real deployment only after the full test suite and lint pass; Render's own Auto-Deploy is off so this is the only path to production
+- [x] CI/CD: a `rollback` job automatically restores the last known-good deploy if `deploy` itself fails
+- [x] Monitoring: `GET /health` checks real database connectivity for uptime monitoring; every request is logged with a correlation ID (`X-Request-ID`) tying client, server log, and any unhandled-exception traceback together

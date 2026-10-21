@@ -12,12 +12,9 @@ from flask import Flask
 from flask_swagger_ui import get_swaggerui_blueprint
 
 from app.extensions import cache, db, limiter, ma
+from app.logging_config import configure_logging
 from config import DevelopmentConfig
 
-# URL where the interactive Swagger UI page itself is served, and the
-# path to the raw OpenAPI/Swagger spec it reads from -- app/static/
-# is served automatically by Flask, so /static/swagger.yaml just
-# works without any extra route needed.
 SWAGGER_URL = "/api/docs"
 API_URL = "/static/swagger.yaml"
 
@@ -40,25 +37,19 @@ def create_app(config_class=DevelopmentConfig):
     app = Flask(__name__)
     app.config.from_object(config_class)
 
+    # Configured before any extension or blueprint below so that
+    # everything -- including a logging call made during their own
+    # setup -- goes through the same request-ID-tagged formatter.
+    configure_logging(app)
+
     db.init_app(app)
     ma.init_app(app)
     limiter.init_app(app)
     cache.init_app(app)
 
-    # Deferred import: avoids a circular dependency, since
-    # error_handlers.py doesn't need anything from this module.
     from app.error_handlers import register_error_handlers  # pylint: disable=import-outside-toplevel
     register_error_handlers(app)
 
-    # Models must be imported after db.init_app() so SQLAlchemy knows
-    # about every table before anything (like db.create_all(), used in
-    # tests) tries to create them. service_mechanics must come before
-    # mechanic/service_ticket since relationship(secondary=...) in
-    # those files refers to it by table name. inventory and
-    # ticket_part come last: ticket_part's foreign keys point at both
-    # service_tickets and inventory. These imports are for their side
-    # effect (registering each model's table with SQLAlchemy) rather
-    # than to use the names directly, hence the disable comment below.
     # pylint: disable=unused-import,import-outside-toplevel
     from app.models import (
         customer,
@@ -81,12 +72,12 @@ def create_app(config_class=DevelopmentConfig):
     from app.blueprints.inventory import inventory_bp
     app.register_blueprint(inventory_bp, url_prefix="/inventory")
 
-    # Serves the interactive Swagger UI at /api/docs, reading its spec
-    # from app/static/swagger.yaml (see SWAGGER_URL/API_URL above).
-    # Registered last and separately from the resource blueprints
-    # above -- it's documentation, not an API resource, and carries no
-    # url_prefix of its own since get_swaggerui_blueprint already
-    # mounts it at SWAGGER_URL internally.
+    # No url_prefix: GET /health is meant to be a short, memorable path
+    # for an external uptime monitor to poll, not nested under any
+    # resource prefix.
+    from app.blueprints.health import health_bp
+    app.register_blueprint(health_bp)
+
     app.register_blueprint(swaggerui_blueprint, url_prefix=SWAGGER_URL)
 
     return app

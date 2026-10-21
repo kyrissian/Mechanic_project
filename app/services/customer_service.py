@@ -12,15 +12,13 @@ from werkzeug.security import generate_password_hash
 from app.extensions import db
 from app.models.customer import Customer
 from app.models.service_ticket import ServiceTicket
+from app.services.uniqueness import value_taken
 
 
 def email_taken(email, exclude_id=None):
     """exclude_id lets an update ignore the customer's own row, so
     keeping an unchanged email is never flagged as a conflict."""
-    query = select(Customer).where(Customer.email == email)
-    if exclude_id is not None:
-        query = query.where(Customer.id != exclude_id)
-    return db.session.execute(query).scalars().first() is not None
+    return value_taken(Customer, Customer.email, email, exclude_id=exclude_id)
 
 
 def has_service_history(customer_id):

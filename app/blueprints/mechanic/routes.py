@@ -38,7 +38,7 @@ from app.blueprints.mechanic.schemas import (
     mechanics_schema,
 )
 from app.blueprints.service_ticket.schemas import CLOSED_STATUSES, OPEN_STATUSES
-from app.utils.errors import validation_error_response
+from app.utils.errors import not_found_response, validation_error_response
 from app.utils.pagination import paginate_query
 from app.utils.util import encode_mechanic_token, manager_required, mechanic_token_required
 
@@ -157,7 +157,7 @@ def get_mechanic(requesting_id, role, mechanic_id):
     mechanic = db.session.get(Mechanic, mechanic_id)
     if mechanic:
         return mechanic_schema.jsonify(mechanic), 200
-    return jsonify({"error": "Mechanic not found."}), 404
+    return not_found_response("Mechanic")
 
 
 @mechanic_bp.route("/<int:mechanic_id>", methods=["PUT"])
@@ -166,7 +166,7 @@ def update_mechanic(_manager_id, mechanic_id):
     """Updating role or salary is a roster-management decision."""
     mechanic = db.session.get(Mechanic, mechanic_id)
     if not mechanic:
-        return jsonify({"error": "Mechanic not found."}), 404
+        return not_found_response("Mechanic")
 
     try:
         mechanic_data = mechanic_schema.load(request.json)
@@ -194,7 +194,7 @@ def delete_mechanic(_manager_id, mechanic_id):
     attempting it."""
     mechanic = db.session.get(Mechanic, mechanic_id)
     if not mechanic:
-        return jsonify({"error": "Mechanic not found."}), 404
+        return not_found_response("Mechanic")
 
     db.session.delete(mechanic)
     db.session.commit()

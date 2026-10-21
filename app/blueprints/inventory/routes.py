@@ -18,7 +18,7 @@ from app.models.inventory import Inventory
 from app.services import inventory_service
 from app.blueprints.inventory import inventory_bp
 from app.blueprints.inventory.schemas import inventory_list_schema, inventory_schema
-from app.utils.errors import validation_error_response
+from app.utils.errors import not_found_response, validation_error_response
 from app.utils.pagination import paginate_query
 from app.utils.util import manager_required, mechanic_token_required
 
@@ -62,7 +62,7 @@ def get_part(_mechanic_id, _role, inventory_id):
     part = db.session.get(Inventory, inventory_id)
     if part:
         return inventory_schema.jsonify(part), 200
-    return jsonify({"error": "Part not found."}), 404
+    return not_found_response("Part")
 
 
 @inventory_bp.route("/<int:inventory_id>", methods=["PUT"])
@@ -72,7 +72,7 @@ def update_part(_manager_id, inventory_id):
     future additions use the new price."""
     part = db.session.get(Inventory, inventory_id)
     if not part:
-        return jsonify({"error": "Part not found."}), 404
+        return not_found_response("Part")
 
     try:
         part_data = inventory_schema.load(request.json)
@@ -97,7 +97,7 @@ def delete_part(_manager_id, inventory_id):
     be deleted."""
     part = db.session.get(Inventory, inventory_id)
     if not part:
-        return jsonify({"error": "Part not found."}), 404
+        return not_found_response("Part")
 
     if inventory_service.has_been_used(part):
         return (
