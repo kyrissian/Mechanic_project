@@ -46,6 +46,18 @@ A Flask + SQLAlchemy + MySQL backend for a mechanic shop, with role-based JWT au
 
 ## Changelog
 
+### 2026-10-21: Monitoring Live
+
+`GET /health` is now actively polled by [UptimeRobot](https://uptimerobot.com) every 5 minutes, with email alerts on failure, closing the loop on the monitoring work below -- the endpoint existed and was tested before, but nothing was actually watching it yet. See [Monitoring](#monitoring) for the status page link and a note on free-tier cold-start behavior.
+
+### 2026-10-21: DRY Cleanup (Uniqueness Checks, 404 Responses)
+
+A second-pass code review (GitHub Copilot) confirmed the monitoring/CI/CD changes below were correctly incorporated, and flagged two small repetition patterns as optional cleanup -- not required fixes, but addressed here anyway:
+
+- **Duplicate-value checks:** `customer_service.email_taken`, `mechanic_service.email_taken`, and `inventory_service.name_taken` were three copies of the same query shape (select the model, filter one column, optionally exclude a row by id, return whether anything matched). Factored into one shared `app/services/uniqueness.py:value_taken()`; all three functions keep their original name, signature, and docstring, now as thin wrappers around the shared implementation.
+- **Repeated 404 responses:** `jsonify({"error": "<X> not found."}), 404` appeared 17 times across all four blueprints' route files. Added `not_found_response()` to `app/utils/errors.py` (alongside the existing `validation_error_response()`), and replaced every call site with it, including the two cases that build a parameterized message (e.g. `"Mechanic id 7 not found."`).
+- No behavior changed: same response shapes, same status codes, same messages. Full suite (198 pytest + 62 unittest) and Pylint re-verified after the refactor.
+
 ### 2026-10-21: Monitoring, Coverage Gate, and Automated Rollback
 
 Addresses grading feedback on the "API Deployment and CI/CD Pipeline" assignment: both Deployment and CI/CD Pipeline scored "Proficient" (80%), with specific suggestions for reaching "Exemplary" (monitoring/alerting on deployment, additional pipeline stages, clearer documentation). All three are addressed below.
@@ -574,6 +586,8 @@ Mechanic_project/
       service_ticket_service.py   # assignment checks, stock allocation + price
                                    # snapshotting, bulk-mechanic-id resolution
       inventory_service.py        # duplicate-name check, used-part delete block
+      uniqueness.py                # shared value_taken() query, used by the three
+                                    # duplicate-email/name checks above
     models/
       __init__.py
       customer.py                # includes password_hash, deleted_at
@@ -785,7 +799,8 @@ Render's own Auto-Deploy is **off**. The only way to deploy is: push to `main`, 
 Two separate layers catch two separate kinds of failure:
 
 - **A bad deploy** (new code that's broken) is caught by CI itself: the `test` job gates `deploy`, and if a push to `main` somehow still results in a failed `deploy`, the `rollback` job (see [CI/CD](#cicd)) automatically restores the last known-good deploy without anyone needing to notice and act first.
-- **The live site going down between deploys** (the database sleeping, the free-tier instance spinning down, an unrelated outage) is what `GET /health` is for -- it checks real database connectivity, not just "the process is running," and is meant to be polled every few minutes by a free external uptime monitor (e.g. [UptimeRobot](https://uptimerobot.com)) configured to alert on anything other than a 200. This project doesn't wire up an actual monitor account (that's a one-time manual setup step outside the codebase, not something to automate), but the endpoint it would poll already exists and is tested (`tests/test_health.py`).
+- **The live site going down between deploys** (the database sleeping, the free-tier instance spinning down, an unrelated outage) is what `GET /health` is for -- it checks real database connectivity, not just "the process is running," and returns 503 on failure rather than a false "ok." It's actively polled every 5 minutes by [UptimeRobot](https://uptimerobot.com), which alerts by email the moment a check fails. Public status page: [stats.uptimerobot.com/jEhsNGcGXP](https://stats.uptimerobot.com/jEhsNGcGXP).
+- **A note on the free tier:** this project runs on Render's free instance type, which spins down after ~15 minutes of inactivity. The first request after a period of idleness can take 30-60+ seconds to respond while the instance wakes back up, which will occasionally show as a brief "down" blip in the uptime monitor even though nothing is actually broken. A paid Render instance (or a scheduled keep-alive ping) would eliminate this; it's left as-is here since it's a hosting-tier tradeoff, not a code defect.
 
 Beyond uptime, every request is logged as a single structured line (`app/logging_config.py`): method, path, status code, and duration, tagged with a short request-correlation ID that's also echoed back to the client as an `X-Request-ID` response header. Render's own **Logs** tab (Dashboard → service → Logs) is where these are read in practice -- there's no separate logging service wired up, which would be real added value at a larger scale but is out of scope for a single-service project like this one (see [Future Extensions](#future-extensions)). The same correlation ID is attached to whatever an unhandled exception logs (`error_handlers.py`'s existing `app.logger.exception` call), so a user-reported failure and its server-side traceback can be matched by ID rather than by guessing from a timestamp.
 
