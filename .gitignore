@@ -6,3 +6,4 @@ __pycache__/
 seed_production_manager.py
 .coverage
 coverage.xml
+*.sql

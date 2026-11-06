@@ -13,10 +13,11 @@ Three configs are defined:
   tests never hit a limit or read stale cached data; the tests that
   cover those features opt back in with their own subclasses.
 - ProductionConfig: connects to the live PostgreSQL database hosted
-  on Render, using credentials Render injects as real environment
-  variables (not a .env file -- see flask_app.py). Debug mode is
-  explicitly off, since Flask's debugger leaks stack traces and
-  allows arbitrary code execution if ever exposed on a live server.
+  on Neon (the app itself runs on Render), using a connection string
+  Render injects as a real environment variable (not a .env file --
+  see flask_app.py). Debug mode is explicitly off, since Flask's
+  debugger leaks stack traces and allows arbitrary code execution if
+  ever exposed on a live server.
 """
 
 import os
@@ -89,7 +90,7 @@ class TestingConfig(Config):
 
 
 class ProductionConfig(Config):
-    """Connects to the live PostgreSQL database hosted on Render.
+    """Connects to the live PostgreSQL database hosted on Neon.
 
     DEBUG is explicitly False (Flask already defaults to this, but
     stating it here makes the intent unmissable on a config used for
@@ -99,18 +100,27 @@ class ProductionConfig(Config):
     hole on anything other than localhost.
 
     SQLALCHEMY_DATABASE_URI is read from the SQLALCHEMY_DATABASE_URI
-    environment variable (Render's own External Database URL for the
-    Postgres instance, pasted into Render's dashboard as a real
-    environment variable during Web Service setup), with its scheme
+    environment variable (the Neon connection string, set in Render's
+    dashboard as a real environment variable), with its scheme
     rewritten from "postgresql://" to "postgresql+psycopg2://". Without
     this, SQLAlchemy 2.0+ treats a bare "postgresql://" URL as a
     request for psycopg3 (a separate package literally named
     "psycopg", not "psycopg2") by default -- this project installs
     psycopg2-binary specifically, so the driver must be named
     explicitly in the URL rather than left to SQLAlchemy's default.
+
+    SQLALCHEMY_ENGINE_OPTIONS turns on pool_pre_ping because Neon
+    suspends idle databases after about 5 minutes and drops the
+    connections that were open. Pre-ping tests each pooled connection
+    before use and replaces a dead one, so the first request after an
+    idle stretch doesn't fail.
     """
 
     DEBUG = False
+
+    # Neon suspends idle databases and drops their connections; pre-ping
+    # tests each pooled connection before use and replaces dead ones.
+    SQLALCHEMY_ENGINE_OPTIONS = {"pool_pre_ping": True}
 
     _raw_db_uri = os.getenv("SQLALCHEMY_DATABASE_URI")
     SQLALCHEMY_DATABASE_URI = (
