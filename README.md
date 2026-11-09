@@ -46,6 +46,15 @@ A Flask + SQLAlchemy + MySQL backend for a mechanic shop, with role-based JWT au
 
 ## Changelog
 
+### 2026-11-09: Production Database Moved to Neon
+
+Render's free Postgres database expires after a set period, so the production database moved to [Neon](https://neon.com), whose free plan doesn't expire. Only the database moved -- the web service is still on Render.
+
+- Dumped the Render database with `pg_dump --no-owner --no-acl` and restored it into a new Neon project with `psql -f`, then compared row counts table by table. Then pointed Render's `SQLALCHEMY_DATABASE_URI` environment variable at Neon's connection string. The switch itself needed no code change, since `ProductionConfig` already read the URI from the environment.
+- Added `SQLALCHEMY_ENGINE_OPTIONS = {"pool_pre_ping": True}` to `ProductionConfig`. Neon suspends a database after 5 minutes idle and drops its connections, so without pre-ping the first request after a quiet stretch can grab a dead pooled connection and fail. Pre-ping tests each connection before using it and swaps in a fresh one if it's dead. See [Deployment](#deployment).
+- `*.sql` added to `.gitignore`, so database dumps (which hold real rows) can never get committed by accident.
+- `tests/test_config.py` added (1 test) confirming pre-ping stays on in production. Suite total: pytest **199**.
+
 ### 2026-10-21: Monitoring Live
 
 `GET /health` is now actively polled by [UptimeRobot](https://uptimerobot.com) every 5 minutes, with email alerts on failure, closing the loop on the monitoring work below -- the endpoint existed and was tested before, but nothing was actually watching it yet. See [Monitoring](#monitoring) for the status page link and a note on free-tier cold-start behavior.
@@ -72,7 +81,7 @@ Addresses grading feedback on the "API Deployment and CI/CD Pipeline" assignment
 
 ### 2026-10-11: Live Deployment on Render, Full CI/CD Pipeline
 
-- The API is now deployed and publicly reachable, running on [Render](https://render.com), backed by a managed Postgres database (also hosted on Render) instead of the local MySQL used in development. See [Deployment](#deployment) for the live URL and how the deployment is configured.
+- The API is now deployed and publicly reachable, running on [Render](https://render.com), backed by a managed Postgres database (also hosted on Render at the time; since moved to Neon -- see 2026-11-09) instead of the local MySQL used in development. See [Deployment](#deployment) for the live URL and how the deployment is configured.
 - Added `flask_app.py`, a dedicated production entry point for gunicorn (`gunicorn flask_app:app`) -- deliberately kept separate from `run.py`, which still runs local development exactly as before (Flask's own dev server, `DevelopmentConfig`, real MySQL). Nothing about local development changed.
 - Added `ProductionConfig` to `config.py`: `DEBUG = False`, and a database URI read from the `SQLALCHEMY_DATABASE_URI` environment variable with its scheme rewritten to `postgresql+psycopg2://` -- SQLAlchemy 2.0+ otherwise defaults a bare `postgresql://` URL to psycopg3 (an entirely different, unrelated package also named `psycopg`), which this project does not install. This was a real, non-obvious failure encountered live during deployment, not a precaution taken in advance.
 - `psycopg2-binary` used instead of plain `psycopg2`: the non-binary package requires compiling against system PostgreSQL libraries at install time, which isn't reliably available in Render's build environment; `-binary` ships precompiled and installs cleanly there. (The lesson material itself flags this exact Mac-vs-deployment distinction; the same reasoning applies to Render's Linux build environment.)
@@ -197,24 +206,24 @@ This was the largest single change to the project -- a deliberate redesign that 
 
 ## Tech Stack
 
-| Layer                      | Technology                                                                                            |
-| -------------------------- | ----------------------------------------------------------------------------------------------------- |
-| Web framework              | Flask (Application Factory pattern)                                                                   |
-| ORM                        | Flask-SQLAlchemy (SQLAlchemy 2.0 `Mapped`/`mapped_column` style)                                      |
-| Serialization / validation | Flask-Marshmallow, marshmallow-sqlalchemy                                                             |
-| Database                   | MySQL (via `mysql-connector-python`) in development; PostgreSQL (via `psycopg2-binary`) in production |
-| Authentication             | JWT (`python-jose`), `werkzeug.security` for password hashing, role-based access                      |
-| Rate limiting              | Flask-Limiter (in-memory store)                                                                       |
-| Caching                    | Flask-Caching (`SimpleCache` in development, `NullCache` in tests)                                    |
-| Seed data                  | Faker                                                                                                 |
-| Config / secrets           | `python-dotenv` (`.env`, gitignored)                                                                  |
-| Testing                    | pytest, with an isolated in-memory SQLite database                                                    |
-| Manual API testing         | Postman (collection included in the repo)                                                             |
-| API documentation          | Swagger / OpenAPI 2.0 (`flask-swagger-ui`), interactive at `/api/docs`                                |
-| Linting                    | Pylint                                                                                                |
-| Production server          | Gunicorn                                                                                              |
-| Hosting                    | Render (web service + managed Postgres database)                                                      |
-| CI/CD                      | GitHub Actions -- test + lint, then a deploy job gated on them passing                                |
+| Layer                      | Technology                                                                                                    |
+| -------------------------- | ------------------------------------------------------------------------------------------------------------- |
+| Web framework              | Flask (Application Factory pattern)                                                                           |
+| ORM                        | Flask-SQLAlchemy (SQLAlchemy 2.0 `Mapped`/`mapped_column` style)                                              |
+| Serialization / validation | Flask-Marshmallow, marshmallow-sqlalchemy                                                                     |
+| Database                   | MySQL (via `mysql-connector-python`) in development; PostgreSQL on Neon (via `psycopg2-binary`) in production |
+| Authentication             | JWT (`python-jose`), `werkzeug.security` for password hashing, role-based access                              |
+| Rate limiting              | Flask-Limiter (in-memory store)                                                                               |
+| Caching                    | Flask-Caching (`SimpleCache` in development, `NullCache` in tests)                                            |
+| Seed data                  | Faker                                                                                                         |
+| Config / secrets           | `python-dotenv` (`.env`, gitignored)                                                                          |
+| Testing                    | pytest, with an isolated in-memory SQLite database                                                            |
+| Manual API testing         | Postman (collection included in the repo)                                                                     |
+| API documentation          | Swagger / OpenAPI 2.0 (`flask-swagger-ui`), interactive at `/api/docs`                                        |
+| Linting                    | Pylint                                                                                                        |
+| Production server          | Gunicorn                                                                                                      |
+| Hosting                    | Render (web service); Neon (serverless Postgres database)                                                     |
+| CI/CD                      | GitHub Actions -- test + lint, then a deploy job gated on them passing                                        |
 
 ---
 
@@ -251,7 +260,7 @@ MANAGER_PASSWORD=choose_your_own_password
 
 `SECRET_KEY` signs and verifies every JWT (customer and mechanic alike). `MANAGER_EMAIL`/`MANAGER_PASSWORD` are read only by `seed.py`, to create the one manager account you'll actually want to remember the login for (see [Seed Data](#seed-data)). Treat all of these like passwords -- never commit real values.
 
-This covers local development (`DevelopmentConfig`, real MySQL). Running or testing against the production config locally additionally requires a `SQLALCHEMY_DATABASE_URI` line in the same `.env` file (Render's Postgres connection string) -- see [Deployment](#deployment).
+This covers local development (`DevelopmentConfig`, real MySQL). Running or testing against the production config locally additionally requires a `SQLALCHEMY_DATABASE_URI` line in the same `.env` file (Neon's Postgres connection string) -- see [Deployment](#deployment).
 
 ### Run locally
 
@@ -547,11 +556,11 @@ Every error response in this API shares the same `{"error": "..."}` envelope, no
 ```
 Mechanic_project/
   .env                        # local secrets, gitignored
-  .gitignore
+  .gitignore                  # also ignores *.sql database dumps
   .pylintrc
   requirements.txt
   config.py                   # DevelopmentConfig (MySQL) / TestingConfig (SQLite) /
-                               # ProductionConfig (Postgres, read from env vars)
+                               # ProductionConfig (Neon Postgres, read from env vars)
   run.py                      # LOCAL entry point: builds real MySQL tables, starts
                                # Flask's dev server (DevelopmentConfig)
   flask_app.py                 # PRODUCTION entry point: gunicorn imports `app` from
@@ -641,6 +650,7 @@ Mechanic_project/
     test_service_mechanics.py    # composite-PK uniqueness at the DB level
     test_services.py             # direct unit tests for app/services/, no Flask/HTTP
     test_health.py                # /health: db-reachable and simulated-outage cases
+    test_config.py                # ProductionConfig: pool_pre_ping enabled (Neon)
     unittest_suite/              # separate unittest-based suite (see Testing section);
       __init__.py                 # required so `unittest discover` finds this package;
                                    # pytest skips it entirely via conftest.py's collect_ignore
@@ -691,7 +701,7 @@ Run the full suite:
 python -m pytest -v
 ```
 
-Currently: **196 tests, all passing.**
+Currently: **199 tests, all passing.**
 
 - **`test_customer_model.py`** / **`test_customer_routes.py`** -- creation, uniqueness, auth/ownership on update/delete, pagination.
 - **`test_customer_auth.py`** -- login, password-never-leaked, `my-tickets` token enforcement and scoping.
@@ -707,6 +717,7 @@ Currently: **196 tests, all passing.**
 - **`test_error_handlers.py`** -- consistent JSON across every failure mode.
 - **`test_service_mechanics.py`** -- the composite primary key on `service_mechanics` rejecting a duplicate assignment row at the database level.
 - **`test_services.py`** -- direct unit tests for `app/services/`, calling each business-rule function with no Flask/HTTP layer involved at all.
+- **`test_config.py`** -- `ProductionConfig` keeps `pool_pre_ping` enabled, which Neon's idle-suspend behavior depends on.
 
 Tests run against a temporary in-memory SQLite database (`TestingConfig`), never the real MySQL database. Since there's no API route to create the first manager account (by design), tests bootstrap one directly via a `seed_manager()`/`create_manager()` helper in `conftest.py`, then log in through the _real_ `/mechanics/login` route.
 
@@ -748,7 +759,9 @@ Render also offers a built-in "After CI Checks Pass" auto-deploy option, which r
 
 The API is live at **[mechanic-project.onrender.com](https://mechanic-project.onrender.com)**, with interactive documentation at **[mechanic-project.onrender.com/api/docs](https://mechanic-project.onrender.com/api/docs)**.
 
-Hosted on [Render](https://render.com): a free-tier web service running this app via Gunicorn, backed by a separate free-tier managed PostgreSQL database (also on Render). Both were provisioned manually through Render's dashboard, not via code -- there's no infrastructure-as-code file in this repo.
+The app is split across two hosts. The web service runs on [Render](https://render.com) (free tier), serving this app via Gunicorn. The PostgreSQL database runs on [Neon](https://neon.com) (free plan). Both were set up by hand through each provider's dashboard, not via code -- there's no infrastructure-as-code file in this repo. The two are connected by one environment variable, `SQLALCHEMY_DATABASE_URI`, set in Render's dashboard to Neon's connection string.
+
+The database originally lived on Render too, but Render's free Postgres expires after a set period, so it moved to Neon (see the 2026-11-09 changelog entry).
 
 ### Demo Credentials for Grading
 
@@ -766,7 +779,7 @@ Log in via `POST /mechanics/login` on the [live Swagger docs](https://mechanic-p
 |            | Local development (`run.py`)         | Production (`flask_app.py`)                           |
 | ---------- | ------------------------------------ | ----------------------------------------------------- |
 | Config     | `DevelopmentConfig`                  | `ProductionConfig`                                    |
-| Database   | Local MySQL                          | Render-hosted PostgreSQL                              |
+| Database   | Local MySQL                          | Neon-hosted PostgreSQL                                |
 | Server     | Flask's own dev server (`app.run()`) | Gunicorn (`gunicorn flask_app:app`)                   |
 | Debug mode | On                                   | Explicitly off                                        |
 | Secrets    | `.env` file (gitignored)             | Real environment variables, set in Render's dashboard |
@@ -790,6 +803,27 @@ Without this, the live deploy failed with `ModuleNotFoundError: No module named 
 
 Also: `psycopg2-binary` is used instead of plain `psycopg2`. The non-binary package compiles C extensions against system PostgreSQL libraries at install time; Render's build environment doesn't reliably have those available, and the build failed with `ModuleNotFoundError: No module named 'psycopg2'` until switched to `-binary`, which ships precompiled.
 
+### Running on Neon: scale-to-zero and `pool_pre_ping`
+
+Neon suspends a database's compute after 5 minutes without activity and wakes it automatically on the next query, a few hundred milliseconds later. The catch is that suspending drops every open connection, and SQLAlchemy's connection pool doesn't know that -- it would hand the next request a dead connection and the request would fail. `ProductionConfig` handles this with:
+
+```python
+SQLALCHEMY_ENGINE_OPTIONS = {"pool_pre_ping": True}
+```
+
+Pre-ping runs a quick test on each pooled connection before using it and quietly replaces any that are dead. `tests/test_config.py` checks that this setting stays on.
+
+### Moving the database to a new host
+
+This is how the data got from Render to Neon, and it works the same way for any Postgres-to-Postgres move:
+
+```powershell
+pg_dump --no-owner --no-acl -f backup.sql "<old connection string>"
+psql "<new connection string>" -f backup.sql
+```
+
+`--no-owner` and `--no-acl` leave out the old provider's role names, which don't exist on the new one. After restoring, compare row counts per table, then update `SQLALCHEMY_DATABASE_URI` in Render and redeploy. `*.sql` is gitignored because a dump contains real data.
+
 ### Redeploying
 
 Render's own Auto-Deploy is **off**. The only way to deploy is: push to `main`, let the `test` job in CI pass, and the `deploy` job (gated on it) triggers automatically. See [CI/CD](#cicd).
@@ -800,7 +834,7 @@ Two separate layers catch two separate kinds of failure:
 
 - **A bad deploy** (new code that's broken) is caught by CI itself: the `test` job gates `deploy`, and if a push to `main` somehow still results in a failed `deploy`, the `rollback` job (see [CI/CD](#cicd)) automatically restores the last known-good deploy without anyone needing to notice and act first.
 - **The live site going down between deploys** (the database sleeping, the free-tier instance spinning down, an unrelated outage) is what `GET /health` is for -- it checks real database connectivity, not just "the process is running," and returns 503 on failure rather than a false "ok." It's actively polled every 5 minutes by [UptimeRobot](https://uptimerobot.com), which alerts by email the moment a check fails. Public status page: [stats.uptimerobot.com/jEhsNGcGXP](https://stats.uptimerobot.com/jEhsNGcGXP).
-- **A note on the free tier:** this project runs on Render's free instance type, which spins down after ~15 minutes of inactivity. The first request after a period of idleness can take 30-60+ seconds to respond while the instance wakes back up, which will occasionally show as a brief "down" blip in the uptime monitor even though nothing is actually broken. A paid Render instance (or a scheduled keep-alive ping) would eliminate this; it's left as-is here since it's a hosting-tier tradeoff, not a code defect.
+- **A note on the free tier:** this project runs on Render's free instance type, which spins down after ~15 minutes of inactivity. The first request after a period of idleness can take 30-60+ seconds to respond while the instance wakes back up, which will occasionally show as a brief "down" blip in the uptime monitor even though nothing is actually broken. A paid Render instance (or a scheduled keep-alive ping) would eliminate this; it's left as-is here since it's a hosting-tier tradeoff, not a code defect. The database has its own, much shorter version of the same behavior: Neon suspends idle compute after 5 minutes and wakes it on the next query, and `pool_pre_ping` (see above) keeps that from showing up as an error.
 
 Beyond uptime, every request is logged as a single structured line (`app/logging_config.py`): method, path, status code, and duration, tagged with a short request-correlation ID that's also echoed back to the client as an `X-Request-ID` response header. Render's own **Logs** tab (Dashboard → service → Logs) is where these are read in practice -- there's no separate logging service wired up, which would be real added value at a larger scale but is out of scope for a single-service project like this one (see [Future Extensions](#future-extensions)). The same correlation ID is attached to whatever an unhandled exception logs (`error_handlers.py`'s existing `app.logger.exception` call), so a user-reported failure and its server-side traceback can be matched by ID rather than by guessing from a timestamp.
 
@@ -848,12 +882,12 @@ Two GitHub Copilot code review passes suggested improvements genuinely worth hav
 - [x] `seed.py`: Faker-driven demo data with a documented, predictable local password scheme
 - [x] Postman collection included in the repo and covers every endpoint, including auth, role-rejection, and business-rule-conflict cases
 - [x] Interactive Swagger documentation at `/api/docs`, covering every endpoint's paths, request/response definitions, and error cases, verified live against the running server
-- [x] 198 automated tests passing (`python -m pytest -v`), with coverage measured and enforced in CI (`--cov-fail-under=90`, actual ~97%)
+- [x] 199 automated tests passing (`python -m pytest -v`), with coverage measured and enforced in CI (`--cov-fail-under=90`, actual ~97%)
 - [x] Separate `unittest`-based suite (62 tests, one file per blueprint) passing via `python -m unittest discover tests`, per the TDD assignment's literal requirement
 - [x] Business logic extracted into a service layer (`app/services/`), separate from route handlers, across all four blueprints
 - [x] Pylint clean (`python -m pylint app tests config.py`)
 - [x] CI workflow passing on GitHub Actions
-- [x] Deployed and live on Render, backed by a managed PostgreSQL database, served via Gunicorn
+- [x] Deployed and live on Render (served via Gunicorn), backed by a PostgreSQL database on Neon
 - [x] Swagger docs' `host`/`schemes` updated to the live domain and `https`
 - [x] CI/CD: a `deploy` job in `ci_cd.yml`, gated with `needs: test`, triggers a real deployment only after the full test suite and lint pass; Render's own Auto-Deploy is off so this is the only path to production
 - [x] CI/CD: a `rollback` job automatically restores the last known-good deploy if `deploy` itself fails
