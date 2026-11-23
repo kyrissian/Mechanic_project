@@ -17,6 +17,8 @@ A Flask + SQLAlchemy + MySQL backend for a mechanic shop, with role-based JWT au
 
 **Author:** Kathy Booth (with contributions from Claude and GitHub Copilot)
 
+LIVE DEMO NOTE: The live demo uses a free-tier Neon database whose monthly compute allowance has been used up, so the hosted API may be offline or return errors until the allowance resets on November 30. The full source code, tests, and setup instructions are in this repository.
+
 ---
 
 ## Table of Contents
