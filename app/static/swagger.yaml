@@ -1334,6 +1334,48 @@ paths:
           schema:
             $ref: "#/definitions/RateLimitErrorResponse"
 
+  /health:
+    get:
+      tags:
+        - Health
+      summary: "Liveness check for uptime monitoring."
+      description: >
+        Reports that the web service is up. No authentication and no
+        database query, so an uptime monitor can poll it every few
+        minutes without waking a sleeping database. Exempt from rate
+        limiting.
+      responses:
+        200:
+          description: "The service is up."
+          schema:
+            $ref: "#/definitions/HealthResponse"
+          examples:
+            application/json:
+              status: "ok"
+
+  /health/db:
+    get:
+      tags:
+        - Health
+      summary: "Readiness check that confirms database connectivity."
+      description: >
+        Runs a real query against the database, so it wakes a sleeping
+        database. Intended for manual checks, not for a frequent
+        monitor. No authentication. Exempt from rate limiting.
+      responses:
+        200:
+          description: "The database is reachable."
+          schema:
+            $ref: "#/definitions/HealthResponse"
+        503:
+          description: "The database could not be reached."
+          schema:
+            $ref: "#/definitions/HealthErrorResponse"
+          examples:
+            application/json:
+              status: "error"
+              detail: "connection refused"
+
 definitions:
   # ---- Shared error shapes, used across every resource ----
 
@@ -1788,3 +1830,27 @@ definitions:
       - page
       - page_size
       - total_pages
+
+  # ---- Health ----
+
+  HealthResponse:
+    type: "object"
+    properties:
+      status:
+        type: "string"
+        example: "ok"
+    required:
+      - status
+
+  HealthErrorResponse:
+    type: "object"
+    properties:
+      status:
+        type: "string"
+        example: "error"
+      detail:
+        type: "string"
+        description: "The underlying database error message."
+    required:
+      - status
+      - detail

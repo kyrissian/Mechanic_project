@@ -48,6 +48,14 @@ LIVE DEMO NOTE: The live demo uses a free-tier Neon database whose monthly compu
 
 ## Changelog
 
+### 2026-11-23: Health Check Made Database-Free
+
+The free Neon plan includes a monthly compute allowance. UptimeRobot polls `GET /health` every 5 minutes, and the endpoint ran a `SELECT 1` each time, which kept the database awake around the clock and used up the allowance before the month ended.
+
+- `GET /health` now only reports that the web process is up and never queries the database, so the database can sleep between real requests.
+- The previous connectivity check moved to `GET /health/db`, which is meant to be called by hand rather than by a frequent monitor.
+- `tests/test_health.py` grew from 2 to 4 tests, including one proving `/health` never touches the database. Both routes are documented in `swagger.yaml`. Suite total: pytest **201**, unittest suite unaffected at **62**.
+
 ### 2026-11-09: Production Database Moved to Neon
 
 Render's free Postgres database expires after a set period, so the production database moved to [Neon](https://neon.com), whose free plan doesn't expire. Only the database moved -- the web service is still on Render.
@@ -411,9 +419,10 @@ Deliberately no full `PUT`/`DELETE` for the ticket resource itself -- only the s
 
 ### Health (`/health`)
 
-| Method | URL       | Purpose                                                    |
-| ------ | --------- | ---------------------------------------------------------- |
-| GET    | `/health` | Uptime check -- 200 if the database is reachable, else 503 |
+| Method | URL          | Purpose                                                                      |
+| ------ | ------------ | ---------------------------------------------------------------------------- |
+| GET    | `/health`    | Liveness check -- 200 whenever the service is up; never touches the database |
+| GET    | `/health/db` | Readiness check -- 200 if the database is reachable, else 503                |
 
 Unauthenticated and exempt from rate limiting, by design -- see [Monitoring](#monitoring).
 
@@ -629,7 +638,7 @@ Mechanic_project/
         schemas.py                # InventorySchema
       health/
         __init__.py
-        routes.py                 # GET /health -- db connectivity check for uptime monitoring
+        routes.py                 # GET /health (liveness) and GET /health/db (db connectivity check)
   tests/
     __init__.py
     conftest.py                 # fixtures, payload helpers, manager/mechanic bootstrap
@@ -651,7 +660,7 @@ Mechanic_project/
     test_error_handlers.py
     test_service_mechanics.py    # composite-PK uniqueness at the DB level
     test_services.py             # direct unit tests for app/services/, no Flask/HTTP
-    test_health.py                # /health: db-reachable and simulated-outage cases
+    test_health.py                # /health (no database access) and /health/db (reachable and simulated-outage cases)
     test_config.py                # ProductionConfig: pool_pre_ping enabled (Neon)
     unittest_suite/              # separate unittest-based suite (see Testing section);
       __init__.py                 # required so `unittest discover` finds this package;
@@ -835,7 +844,7 @@ Render's own Auto-Deploy is **off**. The only way to deploy is: push to `main`, 
 Two separate layers catch two separate kinds of failure:
 
 - **A bad deploy** (new code that's broken) is caught by CI itself: the `test` job gates `deploy`, and if a push to `main` somehow still results in a failed `deploy`, the `rollback` job (see [CI/CD](#cicd)) automatically restores the last known-good deploy without anyone needing to notice and act first.
-- **The live site going down between deploys** (the database sleeping, the free-tier instance spinning down, an unrelated outage) is what `GET /health` is for -- it checks real database connectivity, not just "the process is running," and returns 503 on failure rather than a false "ok." It's actively polled every 5 minutes by [UptimeRobot](https://uptimerobot.com), which alerts by email the moment a check fails. Public status page: [stats.uptimerobot.com/jEhsNGcGXP](https://stats.uptimerobot.com/jEhsNGcGXP).
+- **The live site going down between deploys** (the free-tier instance spinning down, an unrelated outage) is what `GET /health` is for. It returns 200 whenever the web process is up and is actively polled every 5 minutes by [UptimeRobot](https://uptimerobot.com), which alerts by email the moment a check fails. It deliberately does not query the database, because Neon's free tier has a monthly compute allowance and a query every 5 minutes would keep the database awake all day. `GET /health/db` checks real database connectivity and is meant for manual use. Public status page: [stats.uptimerobot.com/jEhsNGcGXP](https://stats.uptimerobot.com/jEhsNGcGXP).
 - **A note on the free tier:** this project runs on Render's free instance type, which spins down after ~15 minutes of inactivity. The first request after a period of idleness can take 30-60+ seconds to respond while the instance wakes back up, which will occasionally show as a brief "down" blip in the uptime monitor even though nothing is actually broken. A paid Render instance (or a scheduled keep-alive ping) would eliminate this; it's left as-is here since it's a hosting-tier tradeoff, not a code defect. The database has its own, much shorter version of the same behavior: Neon suspends idle compute after 5 minutes and wakes it on the next query, and `pool_pre_ping` (see above) keeps that from showing up as an error.
 
 Beyond uptime, every request is logged as a single structured line (`app/logging_config.py`): method, path, status code, and duration, tagged with a short request-correlation ID that's also echoed back to the client as an `X-Request-ID` response header. Render's own **Logs** tab (Dashboard → service → Logs) is where these are read in practice -- there's no separate logging service wired up, which would be real added value at a larger scale but is out of scope for a single-service project like this one (see [Future Extensions](#future-extensions)). The same correlation ID is attached to whatever an unhandled exception logs (`error_handlers.py`'s existing `app.logger.exception` call), so a user-reported failure and its server-side traceback can be matched by ID rather than by guessing from a timestamp.
@@ -884,7 +893,7 @@ Two GitHub Copilot code review passes suggested improvements genuinely worth hav
 - [x] `seed.py`: Faker-driven demo data with a documented, predictable local password scheme
 - [x] Postman collection included in the repo and covers every endpoint, including auth, role-rejection, and business-rule-conflict cases
 - [x] Interactive Swagger documentation at `/api/docs`, covering every endpoint's paths, request/response definitions, and error cases, verified live against the running server
-- [x] 199 automated tests passing (`python -m pytest -v`), with coverage measured and enforced in CI (`--cov-fail-under=90`, actual ~97%)
+- [x] 201 automated tests passing (`python -m pytest -v`), with coverage measured and enforced in CI (`--cov-fail-under=90`, actual ~97%)
 - [x] Separate `unittest`-based suite (62 tests, one file per blueprint) passing via `python -m unittest discover tests`, per the TDD assignment's literal requirement
 - [x] Business logic extracted into a service layer (`app/services/`), separate from route handlers, across all four blueprints
 - [x] Pylint clean (`python -m pylint app tests config.py`)
@@ -893,4 +902,4 @@ Two GitHub Copilot code review passes suggested improvements genuinely worth hav
 - [x] Swagger docs' `host`/`schemes` updated to the live domain and `https`
 - [x] CI/CD: a `deploy` job in `ci_cd.yml`, gated with `needs: test`, triggers a real deployment only after the full test suite and lint pass; Render's own Auto-Deploy is off so this is the only path to production
 - [x] CI/CD: a `rollback` job automatically restores the last known-good deploy if `deploy` itself fails
-- [x] Monitoring: `GET /health` checks real database connectivity for uptime monitoring; every request is logged with a correlation ID (`X-Request-ID`) tying client, server log, and any unhandled-exception traceback together
+- [x] Monitoring: `GET /health` reports liveness for uptime monitoring without touching the database, `GET /health/db` checks real database connectivity on demand; every request is logged with a correlation ID (`X-Request-ID`) tying client, server log, and any unhandled-exception traceback together
